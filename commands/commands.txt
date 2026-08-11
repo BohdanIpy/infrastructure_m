@@ -1,0 +1,3 @@
+openssl enc -bf-cbc -in text.txt -out file_2.bin -S $(cat salt.data) -pass pass:$(cat textkey.data) -pbkdf2 -iter 100000 -iv $(cat iv.data) -provider legacy -provider default
+
+openssl enc -bf-cbc -in text.txt -out file.bin -S $(cat salt.data) -K $(cat key.data) -iv $(cat iv.data) -provider legacy -provider default
