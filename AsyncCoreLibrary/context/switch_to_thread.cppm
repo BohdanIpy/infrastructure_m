@@ -1,0 +1,29 @@
+module;
+
+#include <thread>
+#include <coroutine>
+
+export module AsyncCoreLibrary:SwitchToThread;
+
+export namespace async_core::context
+{
+    class SwitchToThread
+    {
+    public:
+        bool await_ready()
+        {
+            return false;
+        }
+
+        void await_suspend(std::coroutine_handle<> h)
+        {
+            std::thread thread{[h]()
+            {
+                h.resume();
+            }};
+            thread.detach();
+        }
+
+        void await_resume(){}
+    };
+}

@@ -59,6 +59,7 @@ export namespace network_core::core_api
     }
 #else
     using SocketT = int;
+    SocketT InvalidSocket = -1;
 
     [[nodiscard]] constexpr bool IsValidSocket(SocketT s) noexcept
     {
