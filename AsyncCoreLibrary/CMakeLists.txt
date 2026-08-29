@@ -18,16 +18,22 @@ target_sources(AsyncCoreLibrary
             coro_loop/i_coro_scheduler.cppm
             coro_loop/coro_scheduler.cppm
             coro_loop/switch_to.cppm
-
-            errors/io_error.cppm
+            coro_loop/coro_thread.cppm
 
             io/io_loop.cppm
             io/io_types.cppm
+
             io/async_methods/async_accept.cppm
             io/async_methods/async_close.cppm
             io/async_methods/async_read.cppm
             io/async_methods/async_write.cppm
             io/async_methods/async_poll.cppm
+            io/async_methods/async_connect.cppm
+            io/async_methods/async_shutdown.cppm
+            io/async_methods/async_read_socket.cppm
+            io/async_methods/async_write_socket.cppm
+            io/async_methods/async_read_socket_from.cppm
+            io/async_methods/async_write_socket_to.cppm
 
             sync/async_auto_reset_event.cppm
             sync/async_channel.cppm

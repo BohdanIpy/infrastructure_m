@@ -6,8 +6,13 @@ module;
 #include <atomic>
 #include <exception>
 #include <memory>
+#include <utility>
 
 export module AsyncCoreLibrary:WhenAll;
+
+import :SafeCoroutineHandle;
+
+using async_core::exec::SafeCoroutineHandle;
 
 export namespace async_core::sync
 {
@@ -42,25 +47,38 @@ export namespace async_core::sync
         template <typename... Results>
         struct WhenAllState {
             std::atomic<size_t> remaining{sizeof...(Results)};
-            std::coroutine_handle<> parent_handle{nullptr};
+            SafeCoroutineHandle parent_handle{};
             std::tuple<Results...> results;
             std::exception_ptr exception{nullptr};
         };
 
-        // Internal task type with initial_suspend = suspend_always
-        // so it doesn't run immediately upon creation.
+        // Internal task type compatible with SafeCoroutineHandle
         struct ScheduledWhenAllTask {
             struct promise_type {
+                std::shared_ptr<exec::CoroutineControlBlock> control = std::make_shared<exec::CoroutineControlBlock>();
                 ScheduledWhenAllTask get_return_object() {
-                    return ScheduledWhenAllTask{std::coroutine_handle<promise_type>::from_promise(*this)};
+                    return ScheduledWhenAllTask{
+                        std::coroutine_handle<promise_type>::from_promise(*this)
+                    };
                 }
                 std::suspend_always initial_suspend() noexcept { return {}; }
                 std::suspend_never final_suspend() noexcept { return {}; }
                 void return_void() noexcept {}
                 void unhandled_exception() noexcept { std::terminate(); }
+
+                SafeCoroutineHandle get_safe_handle() noexcept {
+                    return SafeCoroutineHandle{
+                        std::coroutine_handle<promise_type>::from_promise(*this),
+                        control
+                    };
+                }
             };
 
-            std::coroutine_handle<> handle;
+            std::coroutine_handle<promise_type> raw_handle;
+
+            SafeCoroutineHandle get_safe_handle() const noexcept {
+                return raw_handle.promise().get_safe_handle();
+            }
         };
 
         // Task wrapper executing each individual awaitable
@@ -79,28 +97,31 @@ export namespace async_core::sync
             }
 
             if (state->remaining.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-                if (state->parent_handle) {
-                    state->parent_handle.resume();
+                if (state->parent_handle.is_valid()) {
+                    state->parent_handle.try_resume();
                 }
             }
         }
-    } // namespace detail
 
-    // Version 1: Accepts an executor/loop that implements .schedule(std::coroutine_handle<>)
-    template <typename Executor, typename... Awaitables>
-    [[nodiscard]] auto when_all_on(Executor& executor, Awaitables&&... awaitables) {
-        using ResultsTuple = std::tuple<detail::await_result_t<Awaitables>...>;
-        using StateType = detail::WhenAllState<detail::await_result_t<Awaitables>...>;
-
+        // Extracted Awaiter to namespace level to allow templated await_suspend
+        template <typename... Results>
         struct WhenAllAwaiter {
+            using StateType = WhenAllState<Results...>;
+            using ResultsTuple = std::tuple<Results...>;
+
             std::shared_ptr<StateType> state;
 
             bool await_ready() const noexcept {
                 return state->remaining.load(std::memory_order_acquire) == 0;
             }
 
-            bool await_suspend(std::coroutine_handle<> h) noexcept {
-                state->parent_handle = h;
+            template <typename PromiseT>
+            bool await_suspend(std::coroutine_handle<PromiseT> h) noexcept {
+                if constexpr (requires(PromiseT& p) { { p.get_safe_handle() } -> std::same_as<SafeCoroutineHandle>; }) {
+                    state->parent_handle = h.promise().get_safe_handle();
+                } else {
+                    state->parent_handle = SafeCoroutineHandle{h};
+                }
                 return state->remaining.load(std::memory_order_acquire) > 0;
             }
 
@@ -112,17 +133,22 @@ export namespace async_core::sync
             }
         };
 
+    }
+
+    template <typename Executor, typename... Awaitables>
+    [[nodiscard]] auto when_all_on(Executor& executor, Awaitables&&... awaitables) {
+        using StateType = detail::WhenAllState<detail::await_result_t<Awaitables>...>;
+
         auto state = std::make_shared<StateType>();
         auto args_tuple = std::forward_as_tuple(std::forward<Awaitables>(awaitables)...);
 
         [&]<size_t... Is>(std::index_sequence<Is...>) {
             ((executor.schedule(
                  detail::make_when_all_task<Is>(
-                     std::get<Is>(std::move(args_tuple)), state).handle
+                     std::get<Is>(std::move(args_tuple)), state).get_safe_handle()
              )), ...);
         }(std::index_sequence_for<Awaitables...>{});
 
-        return WhenAllAwaiter{std::move(state)};
+        return detail::WhenAllAwaiter<detail::await_result_t<Awaitables>...>{std::move(state)};
     }
-
 }

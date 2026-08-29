@@ -27,7 +27,6 @@ export namespace async_core::exec
         [[nodiscard]] bool is_valid() const noexcept {
             return m_control && m_control->is_alive.load(std::memory_order_acquire);
         }
-
         bool try_resume() {
             if (!is_valid()) return false;
 
@@ -43,5 +42,10 @@ export namespace async_core::exec
                 m_control->is_alive.store(false, std::memory_order_release);
             }
         }
+    };
+
+    template <typename Promise>
+    concept HasSafeHandle = requires {
+        { std::declval<Promise&>().get_safe_handle() } -> std::same_as<SafeCoroutineHandle>;
     };
 }

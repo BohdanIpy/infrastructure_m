@@ -36,7 +36,7 @@ import :SocketAddress;
 import CoreUtility;
 
 using network_core::socket_address::SocketAddress;
-using core_utility::CleanUpWrapper;
+using core_utility::wrappers::CleanUpWrapper;
 
 export namespace network_core::core_api
 {

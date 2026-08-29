@@ -18,9 +18,10 @@ module;
 export module SecurityCoreLibrary:BIOw;
 
 import :CommonTypes;
-import :SecurityUtility;
+import :KeyParser;
 
 using namespace security_core::common_types;
+using security_core::key_parer::KeyParser;
 
 export namespace security_core::biow
 {
@@ -182,7 +183,7 @@ export namespace security_core::biow
 {
     using security_core::common_types::UniqueBIOPtr;
     using security_core::common_types::BioFree;
-    using security_core::utility::CryptoMode;
+    using security_core::common_types::CryptoMode;
 
     std::optional<BioLink> BioChain::PopTop()
     {
@@ -286,7 +287,7 @@ export namespace security_core::biow
         std::vector<unsigned char> keyBytes;
         std::vector<unsigned char> ivBytes;
 
-        security_core::utility::KeyParser::ResolveKeyAndIv(
+        KeyParser::ResolveKeyAndIv(
             key, salt, iv,
             keyNeeded, ivNeeded,
             keyBytes, ivBytes

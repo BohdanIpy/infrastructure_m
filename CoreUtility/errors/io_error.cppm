@@ -6,9 +6,9 @@ module;
 #include <source_location>
 #include <string>
 
-export module AsyncCoreLibrary:IoError;
+export module CoreUtility:IoError;
 
-export namespace async_core::errors
+export namespace core_utility::errors
 {
     struct IoError {
         int code = 0;
@@ -48,8 +48,8 @@ export namespace async_core::errors
 namespace std
 {
     template <>
-    struct std::formatter<async_core::errors::IoError> : std::formatter<std::string> {
-        auto format(const async_core::errors::IoError& error, std::format_context& ctx) const {
+    struct std::formatter<core_utility::errors::IoError> : std::formatter<std::string> {
+        auto format(const core_utility::errors::IoError& error, std::format_context& ctx) const {
             auto out = std::format_to(ctx.out(), "IoError: code={}", error.code);
             if (error.os_errno.has_value()) {
                 const char* msg = strerror(*error.os_errno);

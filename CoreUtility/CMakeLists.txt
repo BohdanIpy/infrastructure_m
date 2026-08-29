@@ -5,5 +5,10 @@ target_sources(CoreUtility
         FILE_SET CXX_MODULES
         BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
         FILES
-            ${CMAKE_CURRENT_SOURCE_DIR}/core_utility.cppm
+            core_utility.cppm
+
+            errors/io_error.cppm
+
+            helpers/wrappers.cppm
+            helpers/time.cppm
 )

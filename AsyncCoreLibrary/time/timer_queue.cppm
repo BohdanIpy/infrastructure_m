@@ -1,28 +1,30 @@
 module;
 
-#include <unordered_map>
 #include <chrono>
 #include <coroutine>
 #include <queue>
 #include <thread>
 #include <condition_variable>
 #include <functional>
+#include <utility>
 
 export module AsyncCoreLibrary:TimerQueue;
 
+import :SafeCoroutineHandle;
 import :DetachedTask;
 
 using namespace std::chrono;
 using namespace std::chrono_literals;
 
 using async_core::exec::DetachedTask;
+using async_core::exec::SafeCoroutineHandle;
 
 export namespace async_core::time
 {
     using Clock = steady_clock;
 
     struct TimerEntry {
-        std::coroutine_handle<> handle;
+        SafeCoroutineHandle handle;
         Clock::time_point deadline;
 
         bool operator>(const TimerEntry& other) const {
@@ -72,26 +74,32 @@ export namespace async_core::time
                         m_timers.pop();
 
                         lk.unlock();
-                        entry.handle.resume();
+                        if (entry.handle.is_valid()) {
+                            entry.handle.try_resume();
+                        }
                         lk.lock();
                     }
                 }
             });
         }
 
-        void AddTimer(std::coroutine_handle<> handle, const milliseconds timeout)
+        void AddTimer(SafeCoroutineHandle handle, const milliseconds timeout)
         {
             std::unique_lock lk(m_mtx);
             m_timers.emplace(handle, Clock::now() + timeout);
             m_cv.notify_one();
         }
 
+        void AddTimer(std::coroutine_handle<> handle, const milliseconds timeout)
+        {
+            AddTimer(SafeCoroutineHandle{handle, std::make_shared<exec::CoroutineControlBlock>()}, timeout);
+        }
+
         template <typename Callable>
             requires std::invocable<Callable>
         void AddTimer(Callable&& cb, const milliseconds delay) {
             auto task = LambdaCoroAdapter(std::forward<Callable>(cb));
-            std::coroutine_handle<> h = task.m_handle;
-            AddTimer(h, delay);
+            AddTimer(task.get_safe_handle(), delay);
         }
 
         ~TimerQueue()

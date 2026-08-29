@@ -7,12 +7,15 @@ target_sources(SecurityCoreLibrary
         FILE_SET CXX_MODULES
         BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
         FILES
-            ${CMAKE_CURRENT_SOURCE_DIR}/core_bio.cppm
-            ${CMAKE_CURRENT_SOURCE_DIR}/core_common_types.cppm
-            ${CMAKE_CURRENT_SOURCE_DIR}/security_core_library.cppm
-            ${CMAKE_CURRENT_SOURCE_DIR}/crypto_allocator.cppm
-            ${CMAKE_CURRENT_SOURCE_DIR}/stream_bio.cppm
-            ${CMAKE_CURRENT_SOURCE_DIR}/security_utility.cppm
+            secure_types/crypto_allocator.cppm
+            secure_types/core_common_types.cppm
+
+            bio/stream_bio.cppm
+            bio/core_bio.cppm
+
+            utility/key_parser.cppm
+
+            security_core_library.cppm
 )
 
 target_link_libraries(SecurityCoreLibrary

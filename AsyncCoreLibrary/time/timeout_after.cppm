@@ -3,7 +3,6 @@ module;
 #include <coroutine>
 #include <exception>
 #include <memory>
-#include <atomic>
 #include <optional>
 #include <chrono>
 #include <mutex>
@@ -72,7 +71,7 @@ export namespace async_core::time
     class TimeoutAfter {
         TimerQueue& m_queue;
         TaskType m_task;
-        Duration m_duration;
+        const Duration m_duration;
         ICoroScheduler* m_scheduler{nullptr};
 
         using ResultType = decltype(std::declval<TaskType&>().get());
@@ -129,7 +128,7 @@ export namespace async_core::time
         // Accept by value to take ownership cleanly
         TimeoutAfter(TimerQueue& queue, ICoroScheduler* scheduler, TaskType task, Duration duration)
             : m_queue(queue), m_task(std::move(task)), m_duration(duration),
-              m_state(std::make_shared<SharedState>()), m_scheduler(scheduler) {}
+              m_scheduler(scheduler), m_state(std::make_shared<SharedState>()) {}
 
         bool await_ready() const noexcept { return false; }
 
@@ -146,7 +145,7 @@ export namespace async_core::time
                 }
             }, std::chrono::duration_cast<milliseconds>(m_duration));
 
-            RunTaskWrapper(m_scheduler,std::move(m_task), m_state);
+            RunTaskWrapper(m_scheduler, std::move(m_task), m_state);
         }
 
         ResultType await_resume() {

@@ -15,9 +15,7 @@ export import :SwitchToThread;
 export import :ICoroScheduler;
 export import :CoroScheduler;
 export import :SwitchTo;
-
-// errors
-export import :IoError;
+export import :CoroThread;
 
 // io
 export import :IoTypes;
@@ -27,6 +25,13 @@ export import :AsyncClose;
 export import :AsyncRead;
 export import :AsyncWrite;
 export import :AsyncPoll;
+export import :AsyncConnect;
+export import :AsyncShutdown;
+export import :AsyncReadSocket;
+export import :AsyncWriteSocket;
+export import :AsyncReadSocketFrom;
+export import :AsyncWriteSocketTo;
+
 
 // sync
 export import :AsyncAutoResetEvent;

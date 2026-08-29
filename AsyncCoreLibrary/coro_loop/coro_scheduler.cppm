@@ -1,83 +1,92 @@
 module;
 
-#include <coroutine>
-#include <condition_variable>
 #include <thread>
-#include <queue>
 #include <iostream>
 #include <vector>
-#include <mutex>
+#include <memory>
+#include <atomic>
+#include <bits/unique_lock.h>
+
 
 export module AsyncCoreLibrary:CoroScheduler;
 
 import :ICoroScheduler;
+import :SafeCoroutineHandle;
+import :CoroThread;
+
+using async_core::coro_thread::CoroThread;
+using async_core::exec::SafeCoroutineHandle;
 
 export namespace async_core::coro_loop
 {
     class CoroScheduler : public ICoroScheduler
     {
-        std::queue<std::coroutine_handle<>> m_coroQ;
-        std::stop_source m_source{};
-        std::vector<std::jthread> m_workers;
-        std::mutex m_queueMtx;
-        std::condition_variable_any m_cv;
+        const std::stop_source m_source{};
+        std::vector<std::unique_ptr<CoroThread>> m_workers;
+        std::atomic<std::size_t> m_rrIndex{0};
 
-        void worker_loop(std::stop_token token)
-        {
+        void worker_loop(CoroThread& worker, const std::stop_token& token) const {
             while (!token.stop_requested())
             {
-                std::coroutine_handle<> proc;
+                SafeCoroutineHandle proc;
                 {
-                    std::unique_lock lock(m_queueMtx);
-
-                    m_cv.wait(lock, token, [this] {
-                        return !m_coroQ.empty();
+                    std::unique_lock<std::mutex> lock(worker.m_mtx);
+                    worker.m_cv.wait(lock, token, [&worker] {
+                        return !worker.m_tasks.empty();
                     });
 
-                    if (token.stop_requested() && m_coroQ.empty()) {
+                    if (token.stop_requested() && worker.m_tasks.empty()) {
                         return;
                     }
 
-                    if (!m_coroQ.empty()) {
-                        proc = m_coroQ.front();
-                        m_coroQ.pop();
+                    if (!worker.m_tasks.empty()) {
+                        proc = std::move(worker.m_tasks.front());
+                        worker.m_tasks.pop();
                     }
                 }
-                if (proc) {
-                    proc.resume();
+
+                if (proc.is_valid()) {
+                    proc.try_resume();
                 }
             }
         }
 
     public:
-        explicit CoroScheduler(std::size_t numThreads)
+        explicit CoroScheduler(std::size_t numThreads = 1)
         {
             m_workers.reserve(numThreads);
             for (std::size_t i = 0; i < numThreads; ++i)
             {
-                m_workers.emplace_back([this](std::stop_token) {
-                    worker_loop(m_source.get_token());
-                });
+                m_workers.push_back(
+                    std::make_unique<CoroThread>(
+                        &CoroScheduler::worker_loop,
+                        this,
+                        m_source.get_token()
+                    )
+                );
             }
         }
 
-        void schedule(std::coroutine_handle<> h) noexcept override {
-            if (!h) return;
-            {
-                std::lock_guard lock(m_queueMtx);
-                m_coroQ.push(h);
-            }
-            m_cv.notify_one();
+        void scheduleOnPosition(SafeCoroutineHandle safeHandle, std::size_t pos) noexcept override
+        {
+            if (!safeHandle.is_valid() || m_workers.empty()) return;
+
+            std::size_t targetIdx = pos % m_workers.size();
+            m_workers[targetIdx]->push(std::move(safeHandle));
+        }
+
+        void schedule(SafeCoroutineHandle safeHandle) noexcept override {
+            scheduleOnPosition(std::move(safeHandle), m_rrIndex.fetch_add(1, std::memory_order_relaxed));
         }
 
         void stop_and_wait_all() override
         {
-            // Atomically request stop once
             if (!m_source.stop_requested()) {
                 (void)m_source.request_stop();
-
                 std::cout << "[ServiceRunner] Initiating shutdown for all services...\n";
-                m_cv.notify_all();
+                for (const auto& worker : m_workers) {
+                    worker->m_cv.notify_all();
+                }
                 m_workers.clear();
                 std::cout << "[ServiceRunner] All services stopped successfully.\n";
             }
@@ -90,7 +99,7 @@ export namespace async_core::coro_loop
 
         ~CoroScheduler() override
         {
-            stop_and_wait_all();
+            CoroScheduler::stop_and_wait_all();
         }
     };
 }

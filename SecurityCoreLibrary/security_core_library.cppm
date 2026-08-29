@@ -2,8 +2,13 @@ module;
 
 export module SecurityCoreLibrary;
 
-export import :BIOw;
-export import :CommonTypes;
+// secure_types
 export import :CryptoAllocator;
+export import :CommonTypes;
+
+// bio
+export import :BIOw;
 export import :StreamBIOw;
-export import :SecurityUtility;
+
+// utility
+export import :KeyParser;

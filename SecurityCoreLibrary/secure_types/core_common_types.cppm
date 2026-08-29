@@ -13,6 +13,12 @@ export namespace security_core::common_types {
 
     using namespace security_core::crypto_allocator;
 
+    enum class CryptoMode : uint8_t
+    {
+        DecryptMode = 0,
+        EncryptMode
+    };
+
     inline void BioFree(BIO *bio)
     {
         if (bio)
@@ -32,4 +38,6 @@ export namespace security_core::common_types {
     using BasicCryptoString = std::basic_string<CharT, CharTraits, Allocator>;
 
     using AsciiCryptoString = BasicCryptoString<char, std::char_traits<char>, CryptoAllocator<char>>;
+
+
 }

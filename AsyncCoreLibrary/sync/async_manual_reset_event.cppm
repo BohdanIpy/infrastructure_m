@@ -1,14 +1,17 @@
 module;
 
-#include <mutex>
-#include <queue>
 #include <coroutine>
+#include <mutex>
+#include <vector>
+#include <utility>
 
 export module AsyncCoreLibrary:AsyncManualResetEvent;
 
 import :ICoroScheduler;
+import :SafeCoroutineHandle;
 
 using async_core::coro_loop::ICoroScheduler;
+using async_core::exec::SafeCoroutineHandle;
 
 export namespace async_core::sync
 {
@@ -16,14 +19,39 @@ export namespace async_core::sync
     {
         ICoroScheduler* m_scheduler{nullptr};
         std::mutex m_mtx;
-        std::queue<std::coroutine_handle<>> m_handles;
+        std::vector<SafeCoroutineHandle> m_handles;
         bool m_signaled{false};
 
     public:
-        explicit AsyncManualResetEvent(ICoroScheduler* scheduler, bool signaled = false) noexcept
+        struct Awaiter
+        {
+            AsyncManualResetEvent& event;
+
+            bool await_ready() const noexcept { return false; }
+
+            template <typename Promise>
+                requires exec::HasSafeHandle<Promise>
+            bool await_suspend(std::coroutine_handle<Promise> h) noexcept
+            {
+                std::unique_lock lock(event.m_mtx);
+
+                if (event.m_signaled)
+                {
+                    return false;
+                }
+
+                event.m_handles.push_back(h.promise().get_safe_handle());
+                return true;
+            }
+
+            void await_resume() const noexcept {}
+        };
+
+        explicit AsyncManualResetEvent(ICoroScheduler* scheduler = nullptr, bool signaled = false) noexcept
             : m_scheduler(scheduler), m_signaled(signaled) {}
 
         void set_scheduler(ICoroScheduler* sched) noexcept {
+            std::lock_guard lock(m_mtx);
             m_scheduler = sched;
         }
 
@@ -35,54 +63,42 @@ export namespace async_core::sync
 
         void set() noexcept
         {
-            std::vector<std::coroutine_handle<>> to_resume;
+            std::vector<SafeCoroutineHandle> to_resume;
+            ICoroScheduler* target_sched{nullptr};
+
             {
                 std::unique_lock lock(m_mtx);
                 if (m_signaled) return;
                 m_signaled = true;
 
-                while (!m_handles.empty())
+                for (auto& safe_h : m_handles)
                 {
-                    to_resume.push_back(m_handles.front());
-                    m_handles.pop();
+                    if (safe_h.is_valid())
+                    {
+                        to_resume.push_back(std::move(safe_h));
+                    }
                 }
+                m_handles.clear();
+                target_sched = m_scheduler;
             }
 
-            if (m_scheduler)
+            for (auto& safe_h : to_resume)
             {
-                for (auto h : to_resume)
+                if (!safe_h.is_valid()) continue;
+
+                if (target_sched)
                 {
-                    m_scheduler->schedule(h);
+                    target_sched->schedule(std::move(safe_h));
+                }
+                else
+                {
+                    safe_h.try_resume();
                 }
             }
         }
 
-        auto operator co_await() noexcept
+        Awaiter operator co_await() noexcept
         {
-            struct Awaiter
-            {
-                AsyncManualResetEvent& event;
-
-                bool await_ready() noexcept
-                {
-                    std::unique_lock lock(event.m_mtx);
-                    return event.m_signaled;
-                }
-
-                bool await_suspend(std::coroutine_handle<> h) noexcept
-                {
-                    std::unique_lock lock(event.m_mtx);
-                    if (event.m_signaled)
-                    {
-                        return false;
-                    }
-                    event.m_handles.push(h);
-                    return true;
-                }
-
-                void await_resume() const noexcept {}
-            };
-
             return Awaiter{*this};
         }
     };

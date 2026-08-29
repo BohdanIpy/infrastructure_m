@@ -4,8 +4,11 @@ module;
 #include <exception>
 #include <semaphore>
 #include <utility>
+#include <memory>
 
 export module AsyncCoreLibrary:Task;
+
+import :SafeCoroutineHandle;
 
 export namespace async_core::exec
 {
@@ -24,10 +27,19 @@ export namespace async_core::exec
 
         struct promise_type
         {
+            std::shared_ptr<CoroutineControlBlock> control = std::make_shared<CoroutineControlBlock>();
+
             T value{};
-            std::coroutine_handle<> continuation{nullptr};
+            std::coroutine_handle<> continuation{};
             std::exception_ptr m_exception{nullptr};
             std::binary_semaphore* m_semaphore{nullptr};
+
+            ~promise_type()
+            {
+                if (control) {
+                    control->is_alive.store(false, std::memory_order_release);
+                }
+            }
 
             Task get_return_object()
             {
@@ -83,7 +95,6 @@ export namespace async_core::exec
         Task& operator=(const Task&) = delete;
 
         Task(Task&& other) noexcept : m_handle(std::exchange(other.m_handle, nullptr)) {}
-
         Task& operator=(Task&& other) noexcept {
             if (this != &other) {
                 if (m_handle) m_handle.destroy();
@@ -151,9 +162,18 @@ export namespace async_core::exec
     template<>
     struct Task<void>::promise_type
     {
+        std::shared_ptr<CoroutineControlBlock> control = std::make_shared<CoroutineControlBlock>();
+
         std::coroutine_handle<> continuation{nullptr};
         std::exception_ptr m_exception{nullptr};
         std::binary_semaphore* m_semaphore{nullptr};
+
+        ~promise_type()
+        {
+            if (control) {
+                control->is_alive.store(false, std::memory_order_release);
+            }
+        }
 
         Task get_return_object()
         {
@@ -194,6 +214,13 @@ export namespace async_core::exec
         }
 
         void return_void() noexcept{}
+
+        SafeCoroutineHandle get_safe_handle() {
+            return SafeCoroutineHandle{
+                std::coroutine_handle<promise_type>::from_promise(*this),
+                control
+            };
+        }
     };
 
     template <typename T>

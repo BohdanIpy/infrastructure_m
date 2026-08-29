@@ -6,15 +6,25 @@ module;
 #include <atomic>
 #include <iostream>
 #include <coroutine>
+#include <type_traits>
+#include <utility>
+#include <memory>
 
 export module AsyncCoreLibrary:AsyncChannel;
 
 import :ICoroScheduler;
+import :SafeCoroutineHandle;
 
 using async_core::coro_loop::ICoroScheduler;
+using async_core::exec::SafeCoroutineHandle;
 
 export namespace async_core::sync
 {
+    template <typename PromiseT>
+    concept HasSafeHandle = requires(PromiseT& p) {
+        { p.get_safe_handle() } -> std::same_as<SafeCoroutineHandle>;
+    };
+
     template <typename T>
     class AsyncChannel {
         ICoroScheduler* m_scheduler{nullptr};
@@ -25,14 +35,14 @@ export namespace async_core::sync
         std::mutex m_mtx;
 
         struct ReaderNode {
-            std::coroutine_handle<> handle;
-            std::optional<T>* value_slot;
+            SafeCoroutineHandle handle;
+            std::shared_ptr<std::optional<T>> value_slot;
         };
 
         struct WriterNode {
-            std::coroutine_handle<> handle;
+            SafeCoroutineHandle handle;
             T value;
-            bool* success_slot{nullptr};
+            std::shared_ptr<bool> success_slot;
         };
 
         std::queue<ReaderNode> m_readers;
@@ -46,6 +56,155 @@ export namespace async_core::sync
         std::atomic<int> debug_writers_pushed{0};
         std::atomic<int> debug_writers_drained_by_receive{0};
         std::atomic<int> debug_writers_failed_by_close{0};
+
+        // --- Awaiters Defined as Class-Level Nested Structs ---
+
+        struct SendAwaiter {
+            AsyncChannel* channel;
+            T value;
+            std::shared_ptr<bool> sent_successfully{std::make_shared<bool>(false)};
+
+            bool await_ready() noexcept {
+                std::lock_guard lock(channel->m_mtx);
+                return try_send_under_lock();
+            }
+
+            bool try_send_under_lock() noexcept {
+                if (channel->m_closed) return true;
+
+                if (!channel->m_readers.empty()) {
+                    auto reader = std::move(channel->m_readers.front());
+                    channel->m_readers.pop();
+
+                    if (reader.value_slot) {
+                        *reader.value_slot = std::move(value);
+                    }
+                    *sent_successfully = true;
+                    channel->debug_sends_succeeded.fetch_add(1, std::memory_order_relaxed);
+                    channel->debug_receives_succeeded.fetch_add(1, std::memory_order_relaxed);
+
+                    if (reader.handle.is_valid()) {
+                        if (channel->m_scheduler) channel->m_scheduler->schedule(std::move(reader.handle));
+                        else reader.handle.try_resume();
+                    }
+                    return true;
+                }
+
+                if (channel->m_capacity > 0 && channel->m_buffer.size() < channel->m_capacity) {
+                    channel->m_buffer.push(std::move(value));
+                    *sent_successfully = true;
+                    channel->debug_sends_succeeded.fetch_add(1, std::memory_order_relaxed);
+                    return true;
+                }
+
+                return false;
+            }
+
+            template <typename PromiseT>
+                requires HasSafeHandle<PromiseT>
+            bool await_suspend(std::coroutine_handle<PromiseT> h) noexcept {
+                std::lock_guard lock(channel->m_mtx);
+
+                if (try_send_under_lock()) {
+                    return false;
+                }
+
+                channel->debug_writers_pushed.fetch_add(1, std::memory_order_relaxed);
+                channel->m_writers.push(WriterNode{
+                    h.promise().get_safe_handle(),
+                    std::move(value),
+                    sent_successfully
+                });
+                return true;
+            }
+
+            bool await_resume() const noexcept {
+                if (!*sent_successfully) {
+                    channel->debug_sends_failed.fetch_add(1, std::memory_order_relaxed);
+                }
+                return *sent_successfully;
+            }
+        };
+
+        struct ReceiveAwaiter {
+            AsyncChannel* channel;
+            std::shared_ptr<std::optional<T>> result_slot{std::make_shared<std::optional<T>>(std::nullopt)};
+
+            bool await_ready() noexcept {
+                std::lock_guard lock(channel->m_mtx);
+                return try_fetch_under_lock();
+            }
+
+            bool try_fetch_under_lock() noexcept {
+                if (!channel->m_buffer.empty()) {
+                    *result_slot = std::move(channel->m_buffer.front());
+                    channel->m_buffer.pop();
+                    channel->debug_receives_succeeded.fetch_add(1, std::memory_order_relaxed);
+
+                    if (!channel->m_writers.empty()) {
+                        auto writer = std::move(channel->m_writers.front());
+                        channel->m_writers.pop();
+
+                        channel->m_buffer.push(std::move(writer.value));
+                        if (writer.success_slot) *writer.success_slot = true;
+                        channel->debug_sends_succeeded.fetch_add(1, std::memory_order_relaxed);
+                        channel->debug_writers_drained_by_receive.fetch_add(1, std::memory_order_relaxed);
+
+                        if (writer.handle.is_valid()) {
+                            if (channel->m_scheduler) channel->m_scheduler->schedule(std::move(writer.handle));
+                            else writer.handle.try_resume();
+                        }
+                    }
+                    return true;
+                }
+
+                if (!channel->m_writers.empty()) {
+                    auto writer = std::move(channel->m_writers.front());
+                    channel->m_writers.pop();
+
+                    *result_slot = std::move(writer.value);
+                    if (writer.success_slot) *writer.success_slot = true;
+                    channel->debug_sends_succeeded.fetch_add(1, std::memory_order_relaxed);
+                    channel->debug_receives_succeeded.fetch_add(1, std::memory_order_relaxed);
+                    channel->debug_writers_drained_by_receive.fetch_add(1, std::memory_order_relaxed);
+
+                    if (writer.handle.is_valid()) {
+                        if (channel->m_scheduler) channel->m_scheduler->schedule(std::move(writer.handle));
+                        else writer.handle.try_resume();
+                    }
+                    return true;
+                }
+
+                if (channel->m_closed) {
+                    *result_slot = std::nullopt;
+                    return true;
+                }
+
+                return false;
+            }
+
+            template <typename PromiseT>
+                requires HasSafeHandle<PromiseT>
+            bool await_suspend(std::coroutine_handle<PromiseT> h) noexcept {
+                std::lock_guard lock(channel->m_mtx);
+
+                if (try_fetch_under_lock()) {
+                    return false;
+                }
+
+                channel->m_readers.push(ReaderNode{
+                    h.promise().get_safe_handle(),
+                    result_slot
+                });
+                return true;
+            }
+
+            std::optional<T> await_resume() noexcept {
+                return std::move(*result_slot);
+            }
+        };
+
+        // --- Channel Interface ---
 
         explicit AsyncChannel(ICoroScheduler* sched = nullptr, size_t capacity = 0)
             : m_scheduler(sched), m_capacity(capacity) {}
@@ -81,13 +240,16 @@ export namespace async_core::sync
                 m_closed = true;
 
                 while (!m_writers.empty() && (m_capacity == 0 || m_buffer.size() < m_capacity)) {
-                    auto writer = m_writers.front();
+                    auto writer = std::move(m_writers.front());
                     m_writers.pop();
                     m_buffer.push(std::move(writer.value));
+
                     if (writer.success_slot) *writer.success_slot = true;
                     debug_sends_succeeded.fetch_add(1, std::memory_order_relaxed);
-                    if (writer.handle && m_scheduler) {
-                        m_scheduler->schedule(writer.handle);
+
+                    if (writer.handle.is_valid()) {
+                        if (m_scheduler) m_scheduler->schedule(std::move(writer.handle));
+                        else writer.handle.try_resume();
                     }
                 }
 
@@ -96,160 +258,35 @@ export namespace async_core::sync
             }
 
             while (!readers_to_wake.empty()) {
-                auto node = readers_to_wake.front();
+                auto node = std::move(readers_to_wake.front());
                 readers_to_wake.pop();
                 if (node.value_slot) *node.value_slot = std::nullopt;
-                if (node.handle && m_scheduler) m_scheduler->schedule(node.handle);
+                if (node.handle.is_valid()) {
+                    if (m_scheduler) m_scheduler->schedule(std::move(node.handle));
+                    else node.handle.try_resume();
+                }
             }
 
             while (!writers_to_wake.empty()) {
-                auto node = writers_to_wake.front();
+                auto node = std::move(writers_to_wake.front());
                 writers_to_wake.pop();
                 if (node.success_slot) *node.success_slot = false;
                 debug_writers_failed_by_close.fetch_add(1, std::memory_order_relaxed);
                 debug_sends_failed.fetch_add(1, std::memory_order_relaxed);
-                if (node.handle && m_scheduler) m_scheduler->schedule(node.handle);
+                if (node.handle.is_valid()) {
+                    if (m_scheduler) m_scheduler->schedule(std::move(node.handle));
+                    else node.handle.try_resume();
+                }
             }
         }
 
-        [[nodiscard]] auto send(T value) noexcept {
+        [[nodiscard]] SendAwaiter send(T value) noexcept {
             debug_sends_attempted.fetch_add(1, std::memory_order_relaxed);
-
-            struct SendAwaiter {
-                AsyncChannel& channel;
-                T value;
-                bool sent_successfully{false};
-
-                bool try_send_under_lock() noexcept {
-                    if (channel.m_closed) return true;
-
-                    if (!channel.m_readers.empty()) {
-                        auto reader = channel.m_readers.front();
-                        channel.m_readers.pop();
-
-                        if (reader.value_slot) {
-                            *reader.value_slot = std::move(value);
-                        }
-                        sent_successfully = true;
-                        channel.debug_sends_succeeded.fetch_add(1, std::memory_order_relaxed);
-                        channel.debug_receives_succeeded.fetch_add(1, std::memory_order_relaxed);
-
-                        if (reader.handle && channel.m_scheduler) {
-                            channel.m_scheduler->schedule(reader.handle);
-                        }
-                        return true;
-                    }
-
-                    if (channel.m_capacity == 0 || channel.m_buffer.size() < channel.m_capacity) {
-                        channel.m_buffer.push(std::move(value));
-                        sent_successfully = true;
-                        channel.debug_sends_succeeded.fetch_add(1, std::memory_order_relaxed);
-                        return true;
-                    }
-
-                    return false;
-                }
-
-                bool await_ready() noexcept {
-                    std::lock_guard lock(channel.m_mtx);
-                    return try_send_under_lock();
-                }
-
-                bool await_suspend(std::coroutine_handle<> h) noexcept {
-                    std::lock_guard lock(channel.m_mtx);
-
-                    if (try_send_under_lock()) {
-                        return false;
-                    }
-
-                    channel.debug_writers_pushed.fetch_add(1, std::memory_order_relaxed);
-                    channel.m_writers.push(WriterNode{h, std::move(value), &sent_successfully});
-                    return true;
-                }
-
-                bool await_resume() noexcept {
-                    if (!sent_successfully) {
-                        channel.debug_sends_failed.fetch_add(1, std::memory_order_relaxed);
-                    }
-                    return sent_successfully;
-                }
-            };
-
-            return SendAwaiter{*this, std::move(value)};
+            return SendAwaiter{.channel = this, .value = std::move(value)};
         }
 
-        [[nodiscard]] auto receive() noexcept {
-            struct ReceiveAwaiter {
-                AsyncChannel& channel;
-                std::optional<T> result_slot{std::nullopt};
-
-                bool try_fetch_under_lock() noexcept {
-                    if (!channel.m_buffer.empty()) {
-                        result_slot = std::move(channel.m_buffer.front());
-                        channel.m_buffer.pop();
-                        channel.debug_receives_succeeded.fetch_add(1, std::memory_order_relaxed);
-
-                        if (!channel.m_writers.empty()) {
-                            auto writer = channel.m_writers.front();
-                            channel.m_writers.pop();
-
-                            channel.m_buffer.push(std::move(writer.value));
-                            if (writer.success_slot) *writer.success_slot = true;
-                            channel.debug_sends_succeeded.fetch_add(1, std::memory_order_relaxed);
-                            channel.debug_writers_drained_by_receive.fetch_add(1, std::memory_order_relaxed);
-                            if (writer.handle && channel.m_scheduler) {
-                                channel.m_scheduler->schedule(writer.handle);
-                            }
-                        }
-                        return true;
-                    }
-
-                    if (!channel.m_writers.empty()) {
-                        auto writer = channel.m_writers.front();
-                        channel.m_writers.pop();
-
-                        result_slot = std::move(writer.value);
-                        if (writer.success_slot) *writer.success_slot = true;
-                        channel.debug_sends_succeeded.fetch_add(1, std::memory_order_relaxed);
-                        channel.debug_receives_succeeded.fetch_add(1, std::memory_order_relaxed);
-                        channel.debug_writers_drained_by_receive.fetch_add(1, std::memory_order_relaxed);
-                        if (writer.handle && channel.m_scheduler) {
-                            channel.m_scheduler->schedule(writer.handle);
-                        }
-                        return true;
-                    }
-
-                    if (channel.m_closed) {
-                        result_slot = std::nullopt;
-                        return true;
-                    }
-
-                    return false;
-                }
-
-                bool await_ready() noexcept {
-                    std::lock_guard lock(channel.m_mtx);
-                    return try_fetch_under_lock();
-                }
-
-                bool await_suspend(std::coroutine_handle<> h) noexcept {
-                    std::lock_guard lock(channel.m_mtx);
-
-                    if (try_fetch_under_lock()) {
-                        return false;
-                    }
-
-                    channel.m_readers.push(ReaderNode{h, &result_slot});
-                    return true;
-                }
-
-                std::optional<T> await_resume() noexcept {
-                    return std::move(result_slot);
-                }
-            };
-
-            return ReceiveAwaiter{*this};
+        [[nodiscard]] ReceiveAwaiter receive() noexcept {
+            return ReceiveAwaiter{.channel = this};
         }
     };
-
 }

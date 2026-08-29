@@ -17,7 +17,7 @@ export namespace async_core::time
     class SleepUntil
     {
         TimerQueue& m_queue;
-        Clock::time_point m_deadline;
+        const Clock::time_point m_deadline;
 
     public:
 

@@ -6,16 +6,10 @@ module;
 #include <openssl/evp.h>
 #include <vector>
 
-export module SecurityCoreLibrary:SecurityUtility;
+export module SecurityCoreLibrary:KeyParser;
 
-export namespace security_core::utility
+export namespace security_core::key_parer
 {
-    enum class CryptoMode : uint8_t
-    {
-        DecryptMode = 0,
-        EncryptMode
-    };
-
     class KeyParser
     {
     public:

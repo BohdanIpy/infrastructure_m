@@ -18,7 +18,7 @@ module;
 export module NetworkCoreLibrary:SocketAddress;
 
 import CoreUtility;
-using core_utility::match;
+using core_utility::wrappers::match;
 
 export namespace network_core::socket_address
 {

@@ -30,7 +30,7 @@ export namespace async_core::time
     class SleepFor
     {
         TimerQueue& m_queue;
-        milliseconds m_duration;
+        const milliseconds m_duration;
 
     public:
         template <DurationType DurationT>

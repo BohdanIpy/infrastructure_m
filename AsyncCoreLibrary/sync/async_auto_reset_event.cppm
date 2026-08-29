@@ -3,12 +3,15 @@ module;
 #include <coroutine>
 #include <mutex>
 #include <queue>
+#include <utility>
 
 export module AsyncCoreLibrary:AsyncAutoResetEvent;
 
 import :ICoroScheduler;
+import :SafeCoroutineHandle;
 
 using async_core::coro_loop::ICoroScheduler;
+using async_core::exec::SafeCoroutineHandle;
 
 export namespace async_core::sync
 {
@@ -16,75 +19,82 @@ export namespace async_core::sync
     {
         ICoroScheduler* m_scheduler{nullptr};
         std::mutex m_mtx;
-        std::queue<std::coroutine_handle<>> m_handles;
+        std::queue<SafeCoroutineHandle> m_handles;
         bool m_signaled{false};
 
     public:
+        struct Awaiter
+        {
+            AsyncAutoResetEvent* event;
+
+            bool await_ready() noexcept { return false; }
+
+            template <typename Promise>
+                requires exec::HasSafeHandle<Promise>
+            bool await_suspend(std::coroutine_handle<Promise> h) noexcept
+            {
+                std::unique_lock lock(event->m_mtx);
+
+                if (event->m_signaled)
+                {
+                    event->m_signaled = false;
+                    return false;
+                }
+
+                event->m_handles.push(h.promise().get_safe_handle());
+                return true;
+            }
+
+            void await_resume() const noexcept {}
+        };
+
         explicit AsyncAutoResetEvent(ICoroScheduler* sched = nullptr, bool initially_signaled = false)
             : m_scheduler(sched), m_signaled(initially_signaled) {}
 
         void set_scheduler(ICoroScheduler* sched) noexcept {
+            std::lock_guard lock(m_mtx);
             m_scheduler = sched;
         }
 
         void set() noexcept
         {
-            std::coroutine_handle<> h{nullptr};
+            SafeCoroutineHandle safe_h;
+            ICoroScheduler* target_sched{nullptr};
+
             {
                 std::unique_lock lock(m_mtx);
-                if (!m_handles.empty())
+
+                while (!m_handles.empty())
                 {
-                    h = m_handles.front();
+                    safe_h = std::move(m_handles.front());
                     m_handles.pop();
+
+                    if (safe_h.is_valid()) {
+                        target_sched = m_scheduler;
+                        break;
+                    }
                 }
-                else
+
+                if (!safe_h.is_valid())
                 {
                     m_signaled = true;
                     return;
                 }
             }
 
-            if (h && m_scheduler)
+            if (target_sched)
             {
-                m_scheduler->schedule(h);
+                target_sched->schedule(std::move(safe_h));
+            }
+            else
+            {
+                safe_h.try_resume();
             }
         }
 
-        auto operator co_await() noexcept
+        Awaiter operator co_await() noexcept
         {
-            struct Awaiter
-            {
-                AsyncAutoResetEvent& event;
-
-                bool await_ready() noexcept
-                {
-                    std::unique_lock lock(event.m_mtx);
-                    if (event.m_signaled)
-                    {
-                        event.m_signaled = false;
-                        return true;
-                    }
-                    return false;
-                }
-
-                bool await_suspend(std::coroutine_handle<> h) noexcept
-                {
-                    std::unique_lock lock(event.m_mtx);
-                    if (event.m_signaled)
-                    {
-                        event.m_signaled = false;
-                        return false;
-                    }
-
-                    event.m_handles.push(h);
-                    return true;
-                }
-
-                void await_resume() const noexcept {}
-            };
-
-            return Awaiter{*this};
+            return Awaiter{this};
         }
     };
-
 }

@@ -5,7 +5,6 @@ module;
 #include <iterator>
 #include <utility>
 
-
 export module AsyncCoreLibrary:Generator;
 
 export namespace async_core::exec

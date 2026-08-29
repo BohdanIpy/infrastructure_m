@@ -83,7 +83,7 @@ export namespace core_theory::state_machine
     template<typename SymbolType = char>
     class Fsm {
 
-        std::string m_name;
+        const std::string m_name;
         std::vector<State> m_states;
         StateId m_startState{0};
         TransitionTable<SymbolType> m_transitions;

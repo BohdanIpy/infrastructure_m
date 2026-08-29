@@ -5,20 +5,24 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 
-import NetworkCoreLibrary;
 import CoreUtility;
+import NetworkCoreLibrary;
 
 using namespace network_core::socket_address;
 using namespace network_core::core_api;
 using namespace network_core::socket_endpoint;
 
+using core_utility::time::GetTime;
+using core_utility::wrappers::CleanUpWrapper;
+using core_utility::time::GetTimeString;
+
 int main(int argc, char* argv[])
 {
     InitSocketApi();
-    core_utility::CleanUpWrapper clean_up_wrapper{CloseSocketApi};
+    CleanUpWrapper clean_up_wrapper{CloseSocketApi};
 
     std::cout << "Configuring a server..." << std::endl;
-    core_utility::GetTime();
+    GetTime();
     const auto addr = SocketAddress::Any(NetSocketIpType::IP_V6, 50'000);
     const SocketEndpoint endpoint{addr, SocketType::Stream, Protocol::TCP};
     SocketT socket = endpoint.CreateSocket();
@@ -83,7 +87,7 @@ int main(int argc, char* argv[])
         char request[1024];
         std::size_t bytes_received = recv(accepted_socket, request, 1024, 0);
         printf("Received %lu bytes.\n", bytes_received);
-        auto data = core_utility::GetTimeString();
+        auto data = GetTimeString();
         std::size_t bytes_send = send(accepted_socket, data.c_str(), data.size(), 0);
         printf("Sent %lu bytes.\n", bytes_send);
         CloseSocket(accepted_socket);
