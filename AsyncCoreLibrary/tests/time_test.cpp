@@ -15,7 +15,7 @@ using std::chrono::milliseconds;
 
 Task<void> slf(TimerQueue& queue)
 {
-    co_await SleepFor{queue, std::chrono::milliseconds(700)};
+    co_await SleepFor{queue, milliseconds(700)};
 }
 
 TEST(Exec, SleepFor)

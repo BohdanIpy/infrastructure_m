@@ -12,7 +12,7 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/AsyncCoreLibrary)
 
 find_package(OpenSSL REQUIRED)
 
-set(executables "client" "server" "time_server" "basic_setup" "basic_resolve" "ares")
+set(executables "client" "server" "time_server" "basic_setup" "basic_resolve" "ares" "sandbox" "bulk")
 
 foreach (ITEM IN LISTS executables)
     add_executable(${ITEM} src/${ITEM}/main.cpp)
@@ -26,6 +26,7 @@ foreach (ITEM IN LISTS executables)
     )
 endforeach ()
 
+# set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fsanitize=thread -fno-omit-frame-pointer")
 set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fsanitize=address -fno-omit-frame-pointer")
 
 # for ares

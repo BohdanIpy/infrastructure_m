@@ -6,6 +6,7 @@ module;
 #include <vector>
 #include <cstddef>
 #include <utility>
+#include <memory>
 
 export module AsyncCoreLibrary:AsyncSemaphore;
 
@@ -19,19 +20,14 @@ export namespace async_core::sync
 {
     class AsyncSemaphore
     {
-        ICoroScheduler* m_scheduler{nullptr};
+        ICoroScheduler& m_scheduler;
         std::mutex m_waiters_mtx;
         std::ptrdiff_t m_count{0};
-        std::queue<SafeCoroutineHandle> m_waiters;
+        std::queue<std::shared_ptr<SafeCoroutineHandle>> m_waiters;
 
     public:
-        explicit AsyncSemaphore(ICoroScheduler* scheduler = nullptr, std::ptrdiff_t initial_permits = 0) noexcept
+        explicit AsyncSemaphore(ICoroScheduler& scheduler, std::ptrdiff_t initial_permits = 0) noexcept
             : m_scheduler(scheduler), m_count(initial_permits) {}
-
-        void set_scheduler(ICoroScheduler* sched) noexcept {
-            std::lock_guard lock(m_waiters_mtx);
-            m_scheduler = sched;
-        }
 
         bool try_acquire() noexcept {
             std::unique_lock lock(m_waiters_mtx);
@@ -75,9 +71,7 @@ export namespace async_core::sync
         void release(std::ptrdiff_t update = 1) noexcept {
             if (update <= 0) return;
 
-            std::vector<SafeCoroutineHandle> to_resume;
-            ICoroScheduler* target_sched{nullptr};
-
+            std::vector<std::shared_ptr<SafeCoroutineHandle>> to_resume;
             {
                 std::unique_lock lock(m_waiters_mtx);
 
@@ -86,7 +80,7 @@ export namespace async_core::sync
                         auto safe_h = std::move(m_waiters.front());
                         m_waiters.pop();
 
-                        if (safe_h.is_valid()) {
+                        if (safe_h->is_valid()) {
                             to_resume.push_back(std::move(safe_h));
                             --update;
                         }
@@ -95,15 +89,10 @@ export namespace async_core::sync
                         break;
                     }
                 }
-                target_sched = m_scheduler;
             }
 
             for (auto& safe_h : to_resume) {
-                if (target_sched) {
-                    target_sched->schedule(std::move(safe_h));
-                } else {
-                    safe_h.try_resume();
-                }
+                m_scheduler.schedule(std::move(safe_h));
             }
         }
     };

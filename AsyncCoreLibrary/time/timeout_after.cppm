@@ -6,15 +6,22 @@ module;
 #include <optional>
 #include <chrono>
 #include <mutex>
+#include <atomic>
+#include <type_traits>
+#include <variant>
 
 export module AsyncCoreLibrary:TimeoutAfter;
 
 import :ICoroScheduler;
 import :TimerQueue;
 import :SwitchTo;
+import :DetachedTask;
+import :SafeCoroutineHandle;
 
 using async_core::coro_loop::ICoroScheduler;
 using async_core::coro_loop::SwitchTo;
+using async_core::exec::DetachedTask;
+using async_core::exec::HasSafeHandle;
 
 export namespace async_core::time
 {
@@ -27,9 +34,9 @@ export namespace async_core::time
     template <typename T>
     struct TimeoutSharedState {
         std::mutex mtx;
-        bool done{false};
+        std::atomic<bool> done{false};
         RaceResult state{RaceResult::PENDING};
-        std::coroutine_handle<> caller_handle{nullptr};
+        std::shared_ptr<SafeCoroutineHandle> caller_handle{nullptr};
 
         std::optional<T> result;
         std::exception_ptr exception{nullptr};
@@ -51,14 +58,13 @@ export namespace async_core::time
     struct TimeoutSharedState<void>
     {
         std::mutex mtx;
-        bool done{false};
+        std::atomic<bool> done{false};
         RaceResult state{RaceResult::PENDING};
-        std::coroutine_handle<> caller_handle{nullptr};
+        std::shared_ptr<SafeCoroutineHandle> caller_handle{nullptr};
 
         std::exception_ptr exception{nullptr};
-        void set_value(void) {
 
-        }
+        void set_value() {}
 
         void get_value() {
             if (exception) std::rethrow_exception(exception);
@@ -80,68 +86,79 @@ export namespace async_core::time
 
         static DetachedTask RunTaskWrapper(ICoroScheduler* scheduler, TaskType task, std::shared_ptr<SharedState> state) {
             try {
-                if constexpr (std::is_void_v<ResultType>) {
-                    co_await SwitchTo{scheduler};
+                if constexpr (std::is_void_v<ResultType> || std::is_same_v<ResultType, std::monostate>) {
+                    if (scheduler) {
+                        co_await SwitchTo{scheduler};
+                    }
                     co_await task;
 
-                    std::coroutine_handle<> to_resume = nullptr;
-                    {
+                    std::shared_ptr<SafeCoroutineHandle> to_resume = nullptr;
+                    if (!state->done.exchange(true, std::memory_order_acq_rel)) {
                         std::unique_lock lk{state->mtx};
-                        if (!state->done) {
-                            state->state = RaceResult::TASK_WON;
-                            state->done = true;
-                            to_resume = state->caller_handle;
-                        }
-                    }
-                    if (to_resume) to_resume.resume();
-                } else {
-                    auto res = co_await task;
-
-                    std::coroutine_handle<> to_resume = nullptr;
-                    {
-                        std::unique_lock lk{state->mtx};
-                        if (!state->done) {
-                            state->result = std::move(res);
-                            state->state = RaceResult::TASK_WON;
-                            state->done = true;
-                            to_resume = state->caller_handle;
-                        }
-                    }
-                    if (to_resume) to_resume.resume();
-                }
-            } catch (...) {
-                std::coroutine_handle<> to_resume = nullptr;
-                {
-                    std::unique_lock lk{state->mtx};
-                    if (!state->done) {
-                        state->exception = std::current_exception();
                         state->state = RaceResult::TASK_WON;
-                        state->done = true;
                         to_resume = state->caller_handle;
                     }
+                    if (to_resume->is_valid())
+                    {
+                        to_resume->try_resume();
+                    }
+                } else {
+                    if (scheduler) {
+                        co_await SwitchTo{scheduler};
+                    }
+                    auto res = co_await task;
+
+                    std::shared_ptr<SafeCoroutineHandle> to_resume = nullptr;
+                    if (!state->done.exchange(true, std::memory_order_acq_rel)) {
+                        std::unique_lock lk{state->mtx};
+                        state->result = std::move(res);
+                        state->state = RaceResult::TASK_WON;
+                        to_resume = state->caller_handle;
+                    }
+                    if (to_resume->is_valid())
+                    {
+                        to_resume->try_resume();
+                    }
                 }
-                if (to_resume) to_resume.resume();
+            } catch (...) {
+                std::shared_ptr<SafeCoroutineHandle> to_resume = nullptr;
+                if (!state->done.exchange(true, std::memory_order_acq_rel)) {
+                    std::unique_lock lk{state->mtx};
+                    state->exception = std::current_exception();
+                    state->state = RaceResult::TASK_WON;
+                    to_resume = state->caller_handle;
+                }
+                if (to_resume->is_valid())
+                {
+                    to_resume->try_resume();
+                }
             }
         }
 
     public:
-        // Accept by value to take ownership cleanly
         TimeoutAfter(TimerQueue& queue, ICoroScheduler* scheduler, TaskType task, Duration duration)
             : m_queue(queue), m_task(std::move(task)), m_duration(duration),
               m_scheduler(scheduler), m_state(std::make_shared<SharedState>()) {}
 
         bool await_ready() const noexcept { return false; }
 
-        void await_suspend(std::coroutine_handle<> caller) {
-            m_state->caller_handle = caller;
+        template <typename PromiseT>
+            requires HasSafeHandle<PromiseT>
+        void await_suspend(std::coroutine_handle<PromiseT> caller) {
+            m_state->caller_handle = caller.promise().get_safe_handle();
 
             m_queue.AddTimer([state = m_state]() {
-                std::unique_lock lk{state->mtx};
-                if (!state->done)
-                {
-                    state->state = RaceResult::TIMED_OUT;
-                    state->done = true;
-                    state->caller_handle.resume();
+                if (!state->done.exchange(true, std::memory_order_acq_rel)) {
+                    std::shared_ptr<SafeCoroutineHandle> to_resume = nullptr;
+                    {
+                        std::unique_lock lk{state->mtx};
+                        state->state = RaceResult::TIMED_OUT;
+                        to_resume = state->caller_handle;
+                    }
+                    if (to_resume->is_valid())
+                    {
+                        to_resume->try_resume();
+                    }
                 }
             }, std::chrono::duration_cast<milliseconds>(m_duration));
 

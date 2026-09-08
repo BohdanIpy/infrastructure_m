@@ -45,11 +45,11 @@ export namespace async_core::io
                     if (ctx->on_complete) {
                         ctx->on_complete(ctx, cqe->res);
                     }
-                    else if (ctx->safe_coro.is_valid()) {
+                    else if (ctx->safe_coro->is_valid()) {
                         if (m_scheduler) {
                             m_scheduler->schedule(std::move(ctx->safe_coro));
                         } else {
-                            ctx->safe_coro.try_resume();
+                            ctx->safe_coro->try_resume();
                         }
                     }
                 }

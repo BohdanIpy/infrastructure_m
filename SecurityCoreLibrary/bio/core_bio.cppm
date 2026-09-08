@@ -9,9 +9,7 @@ module;
 #include <openssl/err.h>
 #include <openssl/bio.h>
 #include <openssl/evp.h>
-#include <openssl/provider.h>
 #include <memory>
-#include <queue>
 #include <exception>
 #include <stack>
 
@@ -144,7 +142,7 @@ export namespace security_core::biow
         return BioSeekability::ForwardOnly;
     }
 
-    inline BioMode QueryBioMode(BIO* bio) {
+    inline BioMode QueryBioMode(const BIO* bio) {
         if (!bio) return BioMode::None;
 
         // 1. Check explicit OpenSSL flags
@@ -167,6 +165,8 @@ export namespace security_core::biow
         case BIO_TYPE_FILE:
             // File BIOs store access modes internally in their control state
             break;
+        default:
+
         }
 
         if (can_read && can_write) return BioMode::ReadWrite;
@@ -263,9 +263,9 @@ export namespace security_core::biow
 
     void setBioMode(BIO* bio, CryptoMode mode)
     {
-        std::string key;
-        std::string salt;
-        std::string iv;
+        AsciiCryptoString key;
+        AsciiCryptoString salt;
+        AsciiCryptoString iv;
 
         std::cout << "[+] Enter Password OR Hex Key: ";
         std::getline(std::cin, key);
@@ -281,11 +281,11 @@ export namespace security_core::biow
             throw std::runtime_error{"Cipher non-existent or legacy provider not loaded!"};
         }
 
-        auto keyNeeded = static_cast<std::size_t>(EVP_CIPHER_key_length(cipher)); // 16
-        auto ivNeeded  = static_cast<std::size_t>(EVP_CIPHER_iv_length(cipher));  // 8
+        const auto keyNeeded = static_cast<std::size_t>(EVP_CIPHER_key_length(cipher)); // 16
+        const auto ivNeeded  = static_cast<std::size_t>(EVP_CIPHER_iv_length(cipher));  // 8
 
-        std::vector<unsigned char> keyBytes;
-        std::vector<unsigned char> ivBytes;
+        CryptoVector<unsigned char> keyBytes;
+        CryptoVector<unsigned char> ivBytes;
 
         KeyParser::ResolveKeyAndIv(
             key, salt, iv,

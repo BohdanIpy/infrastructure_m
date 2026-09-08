@@ -6,6 +6,7 @@ module;
 #include <span>
 #include <thread>
 #include <cstring>
+#include <memory>
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -67,7 +68,7 @@ export namespace async_core::io
 
     struct IoCtx
     {
-        SafeCoroutineHandle safe_coro{};
+        std::shared_ptr<SafeCoroutineHandle> safe_coro{};
         void (*on_complete)(IoCtx* ctx, int32_t res){nullptr};
         int32_t result{0};
         EventType type{EventType::READ};

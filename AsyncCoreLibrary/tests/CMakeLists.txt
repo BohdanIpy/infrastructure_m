@@ -18,6 +18,7 @@ if(BUILD_TESTING)
             "coro_exec_channel|channel_test.cpp|CoroChannelTest"
             "coro_exec_io|io_test.cpp|CoroIoTest"
             "coro_exec_context|context_test.cpp|CoroContextTest"
+            "coro_exec_a_method|async_methods.cpp|CoroMethodsTest"
     )
 
     foreach(test_spec IN LISTS TEST_SUITES)

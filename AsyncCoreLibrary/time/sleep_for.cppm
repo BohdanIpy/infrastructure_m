@@ -8,6 +8,9 @@ module;
 export module AsyncCoreLibrary:SleepFor;
 
 import :TimerQueue;
+import :SafeCoroutineHandle;
+
+using async_core::exec::HasSafeHandle;
 
 using namespace std::chrono;
 
@@ -43,9 +46,11 @@ export namespace async_core::time
             return m_duration <= milliseconds::zero();
         }
 
-        void await_suspend(std::coroutine_handle<> h)
+        template <typename PromiseT>
+            requires HasSafeHandle<PromiseT>
+        void await_suspend(std::coroutine_handle<PromiseT> h)
         {
-            m_queue.AddTimer(h, m_duration);
+            m_queue.AddTimer(h.promise().get_safe_handle(), m_duration);
         }
 
         void await_resume() const noexcept {}

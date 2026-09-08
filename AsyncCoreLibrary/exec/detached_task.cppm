@@ -4,6 +4,7 @@ module;
 #include <exception>
 #include <memory>
 #include <iostream>
+#include <utility>
 
 export module AsyncCoreLibrary:DetachedTask;
 
@@ -13,22 +14,31 @@ export namespace async_core::exec
 {
     struct DetachedTask {
         struct promise_type {
-            std::shared_ptr<CoroutineControlBlock> control = std::make_shared<CoroutineControlBlock>();
+            std::shared_ptr<CoroutineControlBlock> control_block{nullptr};
+            std::shared_ptr<SafeCoroutineHandle> safe_handle{nullptr};
 
-            ~promise_type()
-            {
-                if (control) {
-                    control->is_alive.store(false, std::memory_order_release);
+            ~promise_type() {
+                if (control_block) {
+                    control_block->state.store(CoroutineState::Destroyed, std::memory_order_release);
+                    // if (control_block->raw_handle.done())
+                    // {
+                    //     control_block->raw_handle.destroy();
+                    // }
                 }
             }
 
-            DetachedTask get_return_object() noexcept { return DetachedTask{std::coroutine_handle<promise_type>::from_promise(*this)}; }
+            DetachedTask get_return_object() noexcept {
+                control_block = std::make_shared<CoroutineControlBlock>(typeid(promise_type));
+                control_block->state = CoroutineState::Suspended;
+                control_block->raw_handle = std::coroutine_handle<promise_type>::from_promise(*this);
+                safe_handle = std::make_shared<SafeCoroutineHandle>();
+                safe_handle->SetControl(control_block);
+                return DetachedTask{safe_handle};
+            }
 
-            // Starts immediately upon invocation
-            std::suspend_never initial_suspend() noexcept { return {}; }
+            auto initial_suspend() noexcept { return std::suspend_never{}; }
 
-            // Frame destroys itself automatically when finished
-            std::suspend_never final_suspend() noexcept { return {}; }
+            auto final_suspend() noexcept { return std::suspend_never{}; }
 
             void return_void() noexcept {}
 
@@ -42,21 +52,20 @@ export namespace async_core::exec
                 }
             }
 
-            SafeCoroutineHandle get_safe_handle() {
-                return SafeCoroutineHandle{
-                    std::coroutine_handle<promise_type>::from_promise(*this),
-                    control
-                };
+            std::shared_ptr<SafeCoroutineHandle> get_safe_handle() const {
+                return safe_handle;
             }
         };
 
-        std::coroutine_handle<promise_type> m_handle;
+        std::shared_ptr<SafeCoroutineHandle> safe_handle;
 
-        SafeCoroutineHandle get_safe_handle() const
-        {
-            return m_handle.promise().get_safe_handle();
+        std::shared_ptr<SafeCoroutineHandle> get_safe_handle() const noexcept {
+            return safe_handle;
         }
 
-        explicit DetachedTask(const std::coroutine_handle<promise_type> handle) : m_handle(handle) {}
+        explicit DetachedTask(std::shared_ptr<SafeCoroutineHandle> handle)
+            : safe_handle(std::move(handle)) {}
+
+        ~DetachedTask() = default;
     };
 }

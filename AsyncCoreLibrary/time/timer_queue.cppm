@@ -7,6 +7,7 @@ module;
 #include <condition_variable>
 #include <functional>
 #include <utility>
+#include <memory>
 
 export module AsyncCoreLibrary:TimerQueue;
 
@@ -18,13 +19,14 @@ using namespace std::chrono_literals;
 
 using async_core::exec::DetachedTask;
 using async_core::exec::SafeCoroutineHandle;
+using async_core::exec::HasSafeHandle;
 
 export namespace async_core::time
 {
     using Clock = steady_clock;
 
     struct TimerEntry {
-        SafeCoroutineHandle handle;
+        std::shared_ptr<SafeCoroutineHandle> handle;
         Clock::time_point deadline;
 
         bool operator>(const TimerEntry& other) const {
@@ -74,8 +76,8 @@ export namespace async_core::time
                         m_timers.pop();
 
                         lk.unlock();
-                        if (entry.handle.is_valid()) {
-                            entry.handle.try_resume();
+                        if (entry.handle->is_valid()) {
+                            entry.handle->try_resume();
                         }
                         lk.lock();
                     }
@@ -83,16 +85,18 @@ export namespace async_core::time
             });
         }
 
-        void AddTimer(SafeCoroutineHandle handle, const milliseconds timeout)
+        void AddTimer(std::shared_ptr<SafeCoroutineHandle> handle, const milliseconds timeout)
         {
             std::unique_lock lk(m_mtx);
             m_timers.emplace(handle, Clock::now() + timeout);
             m_cv.notify_one();
         }
 
-        void AddTimer(std::coroutine_handle<> handle, const milliseconds timeout)
+        template <typename PromiseT>
+            requires HasSafeHandle<PromiseT>
+        void AddTimer(std::coroutine_handle<PromiseT> handle, const milliseconds timeout)
         {
-            AddTimer(SafeCoroutineHandle{handle, std::make_shared<exec::CoroutineControlBlock>()}, timeout);
+            AddTimer(handle.promise().get_safe_handle(), timeout);
         }
 
         template <typename Callable>

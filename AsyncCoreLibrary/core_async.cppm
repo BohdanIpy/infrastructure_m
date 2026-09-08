@@ -41,6 +41,7 @@ export import :AsyncMutex;
 export import :AsyncSemaphore;
 export import :SyncWait;
 export import :WhenAll;
+export import :AsyncLatch;
 
 // time
 export import :TimerQueue;

@@ -4,6 +4,8 @@ module;
 #include <mutex>
 #include <vector>
 #include <utility>
+#include <memory>
+#include <atomic>
 
 export module AsyncCoreLibrary:AsyncManualResetEvent;
 
@@ -17,10 +19,12 @@ export namespace async_core::sync
 {
     class AsyncManualResetEvent
     {
-        ICoroScheduler* m_scheduler{nullptr};
+        ICoroScheduler& m_scheduler;
+
         std::mutex m_mtx;
-        std::vector<SafeCoroutineHandle> m_handles;
-        bool m_signaled{false};
+        std::vector<std::shared_ptr<SafeCoroutineHandle>> m_handles;
+
+        std::atomic<bool> m_signaled{false};
 
     public:
         struct Awaiter
@@ -35,7 +39,7 @@ export namespace async_core::sync
             {
                 std::unique_lock lock(event.m_mtx);
 
-                if (event.m_signaled)
+                if (event.m_signaled.load(std::memory_order::acquire))
                 {
                     return false;
                 }
@@ -47,53 +51,38 @@ export namespace async_core::sync
             void await_resume() const noexcept {}
         };
 
-        explicit AsyncManualResetEvent(ICoroScheduler* scheduler = nullptr, bool signaled = false) noexcept
+        explicit AsyncManualResetEvent(ICoroScheduler& scheduler, bool signaled = false) noexcept
             : m_scheduler(scheduler), m_signaled(signaled) {}
-
-        void set_scheduler(ICoroScheduler* sched) noexcept {
-            std::lock_guard lock(m_mtx);
-            m_scheduler = sched;
-        }
 
         void reset() noexcept
         {
             std::unique_lock lock(m_mtx);
-            m_signaled = false;
+            m_signaled.store(false, std::memory_order::release);
         }
 
         void set() noexcept
         {
-            std::vector<SafeCoroutineHandle> to_resume;
-            ICoroScheduler* target_sched{nullptr};
-
+            std::vector<std::shared_ptr<SafeCoroutineHandle>> to_resume;
             {
                 std::unique_lock lock(m_mtx);
-                if (m_signaled) return;
-                m_signaled = true;
+                if (m_signaled.load(std::memory_order::acquire)) return;
+                m_signaled.store(true, std::memory_order::release);
 
                 for (auto& safe_h : m_handles)
                 {
-                    if (safe_h.is_valid())
+                    if (safe_h->is_valid())
                     {
                         to_resume.push_back(std::move(safe_h));
                     }
                 }
                 m_handles.clear();
-                target_sched = m_scheduler;
             }
 
             for (auto& safe_h : to_resume)
             {
-                if (!safe_h.is_valid()) continue;
+                if (!safe_h->is_valid()) continue;
 
-                if (target_sched)
-                {
-                    target_sched->schedule(std::move(safe_h));
-                }
-                else
-                {
-                    safe_h.try_resume();
-                }
+                m_scheduler.schedule(std::move(safe_h));
             }
         }
 

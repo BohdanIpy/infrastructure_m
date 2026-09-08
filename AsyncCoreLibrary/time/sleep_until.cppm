@@ -1,14 +1,15 @@
 module;
 
 #include <chrono>
-#include <algorithm>
 #include <coroutine>
 
 export module AsyncCoreLibrary:SleepUntil;
 
 import :TimerQueue;
+import :SafeCoroutineHandle;
 
 using namespace std::chrono;
+using async_core::exec::HasSafeHandle;
 
 export namespace async_core::time
 {
@@ -28,14 +29,16 @@ export namespace async_core::time
             return Clock::now() >= m_deadline;
         }
 
-        void await_suspend(std::coroutine_handle<> h) const noexcept
+        template <typename PromiseT>
+            requires HasSafeHandle<PromiseT>
+        void await_suspend(std::coroutine_handle<PromiseT> h) const noexcept
         {
-            auto now = Clock::now();
-            auto wait_time = (m_deadline > now)
-                ? std::chrono::duration_cast<std::chrono::milliseconds>(m_deadline - now)
+            const auto now = Clock::now();
+            const auto wait_time = (m_deadline > now)
+                ? std::chrono::duration_cast<milliseconds>(m_deadline - now)
                 : milliseconds(0);
 
-            m_queue.AddTimer(h, wait_time);
+            m_queue.AddTimer(h.promise().get_safe_handle(), wait_time);
         }
 
         void await_resume() const noexcept {}

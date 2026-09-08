@@ -8,13 +8,18 @@ module;
 
 export module SecurityCoreLibrary:KeyParser;
 
+import :CommonTypes;
+
+using security_core::common_types::CryptoVector;
+using security_core::common_types::AsciiCryptoString;
+
 export namespace security_core::key_parer
 {
     class KeyParser
     {
     public:
 
-        static bool IsHex(const std::string& str)
+        static bool IsHex(const AsciiCryptoString& str)
         {
             return !str.empty() &&
                    (str.length() % 2 == 0) &&
@@ -23,7 +28,7 @@ export namespace security_core::key_parer
                    });
         }
 
-        static std::vector<unsigned char> HexToBytes(const std::string& hex)
+        static CryptoVector<unsigned char> HexToBytes(const AsciiCryptoString& hex)
         {
             if (!IsHex(hex)) {
                 throw std::invalid_argument("Input string is not valid hexadecimal format.");
@@ -35,19 +40,19 @@ export namespace security_core::key_parer
                 throw std::runtime_error("Failed to parse hex string!");
             }
 
-            std::vector<unsigned char> bytes(buf, buf + outLen);
+            CryptoVector<unsigned char> bytes(buf, buf + outLen);
             OPENSSL_free(buf);
             return bytes;
         }
 
         static void ResolveKeyAndIv(
-            const std::string& keyOrPassword,
-            const std::string& salt,
-            const std::string& iv,
-            size_t requiredKeyLen,
-            size_t requiredIvLen,
-            std::vector<unsigned char>& outKey,
-            std::vector<unsigned char>& outIv
+            const AsciiCryptoString& keyOrPassword,
+            const AsciiCryptoString& salt,
+            const AsciiCryptoString& iv,
+            const size_t requiredKeyLen,
+            const size_t requiredIvLen,
+            CryptoVector<unsigned char>& outKey,
+            CryptoVector<unsigned char>& outIv
         )
         {
             // --------------------------------------------------------------------
@@ -62,7 +67,7 @@ export namespace security_core::key_parer
             }
 
             // Prepare Salt bytes
-            std::vector<unsigned char> rawSalt;
+            CryptoVector<unsigned char> rawSalt;
             if (IsHex(salt)) {
                 rawSalt = HexToBytes(salt);
             } else {
@@ -113,8 +118,8 @@ export namespace security_core::key_parer
             // (Matches default: openssl enc -pbkdf2)
             // Derive BOTH Key and IV together from PBKDF2
             // --------------------------------------------------------------------
-            size_t totalLen = requiredKeyLen + requiredIvLen;
-            std::vector<unsigned char> derivedBytes(totalLen);
+            const size_t totalLen = requiredKeyLen + requiredIvLen;
+            CryptoVector<unsigned char> derivedBytes(totalLen);
 
             if (PKCS5_PBKDF2_HMAC(
                     keyOrPassword.c_str(),

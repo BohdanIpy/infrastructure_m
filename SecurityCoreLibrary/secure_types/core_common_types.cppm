@@ -1,5 +1,6 @@
 module;
 
+#include <vector>
 #include <memory>
 #include <openssl/bio.h>
 #include <openssl/provider.h>
@@ -39,5 +40,7 @@ export namespace security_core::common_types {
 
     using AsciiCryptoString = BasicCryptoString<char, std::char_traits<char>, CryptoAllocator<char>>;
 
+    template<typename T>
+    using CryptoVector = std::vector<T, CryptoAllocator<T>>;
 
 }

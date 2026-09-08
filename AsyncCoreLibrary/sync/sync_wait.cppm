@@ -2,6 +2,8 @@ module;
 
 #include <semaphore>
 #include <exception>
+#include <variant>
+#include <coroutine>
 
 export module AsyncCoreLibrary:SyncWait;
 
@@ -16,21 +18,24 @@ export namespace async_core::sync
     {
         std::binary_semaphore signal{0};
 
-        task.m_handle.promise().continuation = nullptr;
-        task.m_handle.promise().m_semaphore = &signal;
+        task.get_safe_handle()->template raw_handle<typename Task<T, Policy>::promise_type>().promise().continuation = nullptr;
+        task.get_safe_handle()->template raw_handle<typename Task<T, Policy>::promise_type>().promise().m_semaphore = &signal;
 
-        task.m_handle.resume();
+        task.get_safe_handle()->template raw_handle<typename Task<T, Policy>::promise_type>().resume();
 
         signal.acquire();
 
-        if (task.m_handle.promise().m_exception != nullptr)
+        if (task.get_safe_handle()->template raw_handle<typename Task<T, Policy>::promise_type>().promise().m_exception != nullptr)
         {
-            std::rethrow_exception(task.m_handle.promise().m_exception);
+            std::rethrow_exception(task.get_safe_handle()->template raw_handle<typename Task<T, Policy>::promise_type>().promise().m_exception);
         }
         if constexpr (!std::is_void_v<T>)
         {
-            return std::move(task.m_handle.promise().value);
+            return std::move(task.get_safe_handle()->template raw_handle<typename Task<T, Policy>::promise_type>().promise().value);
+        }
+        else
+        {
+            return std::monostate{};
         }
     }
-
 }

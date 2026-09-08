@@ -13,14 +13,14 @@ using namespace async_core::coro_loop;
 
 using namespace std::chrono_literals;
 
-Task<void> TestBasicSignal(AsyncAutoResetEvent& event, bool& resumed) {
+static Task<void> TestBasicSignal(AsyncAutoResetEvent& event, bool& resumed) {
     co_await event;
     resumed = true;
 }
 
 TEST(Exec, AsyncAutoResetEvent) {
     std::unique_ptr<ICoroScheduler> scheduler = std::make_unique<CoroScheduler>(2);
-    AsyncAutoResetEvent event{scheduler.get(), false};
+    AsyncAutoResetEvent event{*scheduler, false};
     bool resumed = false;
 
     std::thread producer([&event]() {
@@ -39,12 +39,13 @@ TEST(Exec, AsyncAutoResetEvent) {
 
 // ====================================
 
-Task<void> Worker(AsyncAutoResetEvent& event, int id, std::vector<int>& execution_order) {
+static Task<void> Worker(AsyncAutoResetEvent& event, int id, std::mutex& mtx, std::vector<int>& execution_order) {
     co_await event;
+    std::unique_lock lk(mtx);
     execution_order.push_back(id);
 }
 
-Task<void> TestAutoResetSingleUnblock(AsyncAutoResetEvent& event, std::vector<int>& order) {
+static Task<void> TestAutoResetSingleUnblock(AsyncAutoResetEvent& event, std::vector<int>& order) {
     std::this_thread::sleep_for(50ms);
 
     // Unblocks first worker
@@ -61,11 +62,13 @@ Task<void> TestAutoResetSingleUnblock(AsyncAutoResetEvent& event, std::vector<in
 TEST(Exec, UnblockAsyncAutoResetEvent)
 {
     std::unique_ptr<ICoroScheduler> scheduler = std::make_unique<CoroScheduler>(2);
-    AsyncAutoResetEvent event{scheduler.get(), false};
+    AsyncAutoResetEvent event{*scheduler, false};
     std::vector<int> order;
 
-    auto w1 = Worker(event, 1, order);
-    auto w2 = Worker(event, 2, order);
+    std::mutex mtx;
+
+    auto w1 = Worker(event, 1, mtx, order);
+    auto w2 = Worker(event, 2, mtx, order);
 
     // Spawn workers on separate threads
     std::thread t1([&]() { sync_wait(std::move(w1)); });
@@ -84,7 +87,7 @@ TEST(Exec, UnblockAsyncAutoResetEvent)
 
 // ====================================
 
-Task<void> TestPreSignaled(AsyncAutoResetEvent& event, const std::atomic<bool>& second_finished) {
+static Task<void> TestPreSignaled(AsyncAutoResetEvent& event, const std::atomic<bool>& second_finished) {
     event.set();
 
     co_await event;
@@ -97,9 +100,9 @@ Task<void> TestPreSignaled(AsyncAutoResetEvent& event, const std::atomic<bool>& 
 TEST(Exec, PreSignaled)
 {
     std::unique_ptr<ICoroScheduler> scheduler = std::make_unique<CoroScheduler>(2);
-    AsyncAutoResetEvent event{scheduler.get(), false};
+    AsyncAutoResetEvent event{*scheduler, false};
 
-    std::atomic<bool> second_finished{false};
+    std::atomic second_finished{false};
 
     std::thread background_setter([&]() {
         std::this_thread::sleep_for(50ms);
@@ -120,15 +123,16 @@ TEST(Exec, PreSignaled)
 TEST(AsyncManualResetEventTest, PreSignaledEventDoesNotSuspend)
 {
     std::unique_ptr<ICoroScheduler> scheduler = std::make_unique<CoroScheduler>(2);
-    AsyncManualResetEvent event{scheduler.get(), true};
+    AsyncManualResetEvent event{*scheduler, true};
 
     bool finished = false;
-    auto test_task = [&]() -> DetachedTask {
+    auto test_task = [&]() -> Task<void> {
         co_await event;
         finished = true;
     };
 
-    test_task();
+    sync_wait(test_task());
+
     EXPECT_TRUE(finished);
 }
 
@@ -136,7 +140,7 @@ TEST(AsyncManualResetEventTest, PreSignaledEventDoesNotSuspend)
 
 TEST(AsyncManualResetEventTest, SignalResumesWaitingCoroutine) {
     std::unique_ptr<ICoroScheduler> scheduler = std::make_unique<CoroScheduler>(2);
-    AsyncManualResetEvent event{scheduler.get(), false};
+    AsyncManualResetEvent event{*scheduler, false};
     std::atomic<bool> resumed{false};
     std::latch done_latch{1};
 
@@ -163,7 +167,7 @@ TEST(AsyncManualResetEventTest, SignalResumesWaitingCoroutine) {
 
 TEST(AsyncManualResetEventTest, SetResumesMultipleWaiters) {
     auto scheduler = std::make_unique<CoroScheduler>(2);
-    AsyncManualResetEvent event{scheduler.get(), false};
+    AsyncManualResetEvent event{*scheduler, false};
     constexpr int kNumWaiters = 5;
     std::atomic<int> resumed_count{0};
 
@@ -195,7 +199,7 @@ TEST(AsyncManualResetEventTest, SetResumesMultipleWaiters) {
 
 TEST(AsyncManualResetEventTest, ResetForcesNextWaitersToSuspend) {
     std::unique_ptr<ICoroScheduler> scheduler = std::make_unique<CoroScheduler>(2);
-    AsyncManualResetEvent event{scheduler.get(), false};
+    AsyncManualResetEvent event{*scheduler, false};
     std::atomic<int> completed_phase{0};
 
     std::latch latch1{1};
@@ -233,7 +237,8 @@ TEST(AsyncManualResetEventTest, ResetForcesNextWaitersToSuspend) {
 
 TEST(Exec, TryLockBasic)
 {
-    AsyncMutex mtx;
+    std::unique_ptr<ICoroScheduler> scheduler = std::make_unique<CoroScheduler>(2);
+    AsyncMutex mtx{*scheduler};
 
     EXPECT_TRUE(mtx.try_lock());
     EXPECT_FALSE(mtx.try_lock());
@@ -246,7 +251,8 @@ TEST(Exec, TryLockBasic)
 // ====================================
 
 TEST(Exec, ScopedLockAutoReleases) {
-    AsyncMutex mtx;
+    std::unique_ptr<ICoroScheduler> scheduler = std::make_unique<CoroScheduler>(2);
+    AsyncMutex mtx{*scheduler};
     bool executed_critical_section = false;
 
     auto task = [&]() -> DetachedTask {
@@ -268,7 +274,7 @@ TEST(Exec, ScopedLockAutoReleases) {
 TEST(AsyncMutexTest, GuaranteesMutualExclusion) {
     auto scheduler = std::make_unique<CoroScheduler>(4);
 
-    AsyncMutex mtx{scheduler.get()};
+    AsyncMutex mtx{*scheduler};
 
     int shared_counter = 0;
     std::atomic<int> active_in_critical_section{0};
@@ -311,7 +317,7 @@ TEST(AsyncMutexTest, GuaranteesMutualExclusion) {
 
 TEST(AsyncMutexTest, SequentialLockHandoff) {
     auto scheduler = std::make_unique<CoroScheduler>(4);
-    AsyncMutex mtx{scheduler.get()};
+    AsyncMutex mtx{*scheduler};
 
     std::vector<int> execution_order;
     std::mutex order_mtx;
@@ -354,7 +360,7 @@ TEST(AsyncMutexTest, SequentialLockHandoff) {
 
 TEST(AsyncSemaphoreTest, TryAcquireBasic) {
     auto scheduler = std::make_unique<CoroScheduler>(4);
-    AsyncSemaphore sem(scheduler.get(), 2);
+    AsyncSemaphore sem(*scheduler, 2);
 
     EXPECT_TRUE(sem.try_acquire());
     EXPECT_TRUE(sem.try_acquire());
@@ -371,7 +377,7 @@ TEST(AsyncSemaphoreTest, EnforcesMaxConcurrencyLimit) {
     constexpr int kTotalTasks = 10;
 
     auto scheduler = std::make_unique<CoroScheduler>(4);
-    AsyncSemaphore sem(scheduler.get(), kMaxPermits);
+    AsyncSemaphore sem(*scheduler, kMaxPermits);
     std::atomic<int> active_coroutines{0};
     std::atomic<bool> limit_exceeded{false};
     std::atomic<int> completed_tasks{0};
@@ -409,7 +415,7 @@ TEST(AsyncSemaphoreTest, EnforcesMaxConcurrencyLimit) {
 
 TEST(AsyncSemaphoreTest, QueueingAndHandoff) {
     auto scheduler = std::make_unique<CoroScheduler>(4);
-    AsyncSemaphore sem(scheduler.get(), 0);
+    AsyncSemaphore sem(*scheduler, 0);
 
     std::vector<int> execution_order;
     std::mutex order_mtx;
@@ -465,7 +471,7 @@ TEST(AsyncSemaphoreTest, QueueingAndHandoff) {
 
 TEST(AsyncSemaphoreTest, ProducerConsumerSignaling) {
     auto scheduler = std::make_unique<CoroScheduler>(4);
-    AsyncSemaphore sem(scheduler.get(), 0);
+    AsyncSemaphore sem(*scheduler, 0);
     std::atomic<bool> producer_done{false};
     std::atomic<bool> consumer_done{false};
 
@@ -498,13 +504,36 @@ TEST(AsyncSemaphoreTest, ProducerConsumerSignaling) {
 
 TEST(WhenAllTest, BasicTupleResult) {
     auto scheduler = std::make_unique<CoroScheduler>(4);
-    auto fetch_num = []() -> Task<int> { co_return 42; };
+    auto fetch_num = []() -> Task<int>
+    {
+        co_return 42;
+    };
+    auto fetch_str = []() -> Task<std::string>
+    {
+        co_return "hello";
+    };
+
+    auto main_task = [&]() -> DetachedTask {
+        auto [num, str] = co_await when_all_on(*scheduler, fetch_num(), fetch_str());
+
+        EXPECT_EQ(num, 42);
+        EXPECT_EQ(str, "hello");
+    };
+
+    main_task();
+}
+
+// ====================================
+
+TEST(WhenAllTest, VoidResultType) {
+    auto scheduler = std::make_unique<CoroScheduler>(4);
+    auto fetch_num = []() -> Task<void> { co_return; };
     auto fetch_str = []() -> Task<std::string> { co_return "hello"; };
 
     auto main_task = [&]() -> DetachedTask {
-        auto [num, str] = co_await when_all_on(*scheduler,fetch_num(), fetch_str());
+        auto [vd, str] = co_await when_all_on(*scheduler,fetch_num(), fetch_str());
 
-        EXPECT_EQ(num, 42);
+        //EXPECT_EQ(num, 42);
         EXPECT_EQ(str, "hello");
     };
 

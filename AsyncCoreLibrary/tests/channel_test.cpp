@@ -12,7 +12,7 @@ using namespace async_core::coro_loop;
 
 TEST(AsyncChannelTest, BasicBufferedSendReceiveFIFO) {
     auto scheduler = std::make_unique<CoroScheduler>(4);
-    AsyncChannel<int> chan(scheduler.get(),3);
+    AsyncChannel<int> chan(*scheduler,3);
 
     auto producer = [&]() -> DetachedTask {
         co_await chan.send(10);
@@ -42,7 +42,7 @@ TEST(AsyncChannelTest, BasicBufferedSendReceiveFIFO) {
 
 TEST(AsyncChannelTest, DirectHandoffRendezvous) {
     auto scheduler = std::make_unique<CoroScheduler>(4);
-    AsyncChannel<std::string> chan(scheduler.get(), 0);
+    AsyncChannel<std::string> chan(*scheduler, 0);
     std::string received_msg;
 
     std::latch completion_latch{1};
@@ -69,7 +69,7 @@ TEST(AsyncChannelTest, DirectHandoffRendezvous) {
 
 TEST(AsyncChannelTest, ClosedChannelReturnsNullopt) {
     auto scheduler = std::make_unique<CoroScheduler>(4);
-    AsyncChannel<int> chan(scheduler.get(), 1);
+    AsyncChannel<int> chan(*scheduler, 1);
 
     std::atomic<bool> consumer_saw_nullopt{false};
     std::latch consumer_latch{1};
@@ -106,7 +106,7 @@ TEST(AsyncChannelTest, ClosedChannelReturnsNullopt) {
 
 TEST(AsyncChannelTest, DrainBufferAfterClose) {
     auto scheduler = std::make_unique<CoroScheduler>(4);
-    AsyncChannel<int> chan(scheduler.get(),2);
+    AsyncChannel<int> chan(*scheduler,2);
 
     auto producer = [&]() -> DetachedTask {
         co_await chan.send(100);
@@ -131,53 +131,70 @@ TEST(AsyncChannelTest, DrainBufferAfterClose) {
 }
 
 TEST(AsyncChannelTest, MultiProducerSingleConsumerStress) {
-    constexpr int kNumProducers = 4;
-    constexpr int kItemsPerProducer = 250;
-    constexpr int kExpectedTotal = kNumProducers * kItemsPerProducer;
+    for (int i = 0; i < 200; ++i)
+    {
+        constexpr int kNumProducers = 4;
+        constexpr int kItemsPerProducer = 250;
+        constexpr int kExpectedTotal = kNumProducers * kItemsPerProducer;
 
-    auto scheduler = std::make_unique<CoroScheduler>(8);
-    AsyncChannel<int> chan(scheduler.get(), 16);
+        auto scheduler = std::make_unique<CoroScheduler>(8);
+        AsyncChannel<int> chan(*scheduler, 16);
 
-    std::atomic<int> total_received{0};
-    std::atomic<int> sum_received{0};
+        std::atomic<int> total_received{0};
+        std::atomic<int> sum_received{0};
 
-    std::latch producers_latch{kNumProducers};
-    std::latch consumer_latch{1};
+        std::latch producers_latch{kNumProducers};
+        std::latch consumer_latch{1};
 
-    auto consumer_task = [&]() -> DetachedTask {
-        while (auto val = co_await chan.receive()) {
-            total_received.fetch_add(1, std::memory_order_relaxed);
-            sum_received.fetch_add(*val, std::memory_order_relaxed);
-        }
-        consumer_latch.count_down();
-    };
-    consumer_task();
-
-    for (int p = 0; p < kNumProducers; ++p) {
-        auto producer_task = [&]() -> DetachedTask {
-            for (int i = 0; i < kItemsPerProducer; ++i) {
-                if (!co_await chan.send(1)) {
-                    break;
-                }
+        // Capture references explicitly or pass pointers to ensure lifetime safety
+        auto consumer_task = [](AsyncChannel<int>& ch,
+                                std::atomic<int>& total,
+                                std::atomic<int>& sum,
+                                std::latch& latch) -> DetachedTask
+        {
+            while (auto val = co_await ch.receive()) {
+                total.fetch_add(1, std::memory_order_relaxed);
+                sum.fetch_add(*val, std::memory_order_relaxed);
             }
-            producers_latch.count_down();
+            latch.count_down();
         };
-        producer_task();
+
+        // Start Consumer Coroutine
+        consumer_task(chan, total_received, sum_received, consumer_latch);
+
+        // Start Producer Coroutines
+        for (int p = 0; p < kNumProducers; ++p) {
+            auto producer_task = [](AsyncChannel<int>& ch,
+                                    std::latch& latch) -> DetachedTask
+            {
+                for (int j = 0; j < kItemsPerProducer; ++j) {
+                    auto sd = co_await ch.send(1);
+                    if (!sd) {
+                        break;
+                    }
+                }
+                latch.count_down();
+            };
+
+            producer_task(chan, producers_latch);
+        }
+
+        // Monitor thread waits for producers to finish, then closes channel
+        std::thread monitor([&producers_latch, &chan]() {
+            producers_latch.wait();
+            chan.close();
+        });
+
+        // Wait for consumer to process all values and terminate on close
+        consumer_latch.wait();
+
+        if (monitor.joinable()) {
+            monitor.join();
+        }
+
+        chan.dump_diagnostics();
+
+        EXPECT_EQ(total_received.load(), kExpectedTotal);
+        EXPECT_EQ(sum_received.load(), kExpectedTotal);
     }
-
-    std::thread monitor([&]() {
-        producers_latch.wait();
-        chan.close();
-    });
-
-    consumer_latch.wait();
-
-    if (monitor.joinable()) {
-        monitor.join();
-    }
-
-    chan.dump_diagnostics();
-
-    EXPECT_EQ(total_received.load(), kExpectedTotal);
-    EXPECT_EQ(sum_received.load(), kExpectedTotal);
 }
