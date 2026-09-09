@@ -2,9 +2,9 @@ module;
 
 #include <coroutine>
 #include <exception>
+#include <memory>
 #include <semaphore>
 #include <utility>
-#include <memory>
 #include <variant>
 
 export module AsyncCoreLibrary:Task;
@@ -23,10 +23,21 @@ export namespace async_core::exec
 
     template <typename T>
     struct PromiseReturnBase {
-        T value{};
+        std::optional<T> value;
 
-        void return_value(T val) {
-            value = std::move(val);
+        template <typename U>
+            requires std::convertible_to<U, T>
+        void return_value(U&& val) {
+            value.emplace(std::forward<U>(val));
+        }
+    };
+
+    template <typename T>
+    struct PromiseReturnBase<T&> {
+        T* value{nullptr};
+
+        void return_value(T& val) noexcept {
+            value = std::addressof(val);
         }
     };
 
@@ -45,7 +56,7 @@ export namespace async_core::exec
         struct promise_type : PromiseReturnBase<T>
         {
             std::shared_ptr<CoroutineControlBlock> control_block{nullptr};
-            std::shared_ptr<SafeCoroutineHandle> safe_handle{nullptr};
+            SafeCoroutineHandle safe_handle;
 
             std::coroutine_handle<> continuation{};
             std::exception_ptr m_exception{nullptr};
@@ -54,13 +65,8 @@ export namespace async_core::exec
             ~promise_type()
             {
                 if (control_block) {
-                    if (control_block->state.load(std::memory_order_relaxed) == CoroutineState::Destroyed)
-                        return;
                     control_block->state.store(CoroutineState::Destroyed, std::memory_order_release);
-                    // if (control_block->raw_handle.done())
-                    // {
-                    //     control_block->raw_handle.destroy();
-                    // }
+                    control_block->raw_handle = nullptr;
                 }
             }
 
@@ -69,8 +75,7 @@ export namespace async_core::exec
                 control_block = std::make_shared<CoroutineControlBlock>(typeid(promise_type));
                 control_block->state = CoroutineState::Suspended;
                 control_block->raw_handle = std::coroutine_handle<promise_type>::from_promise(*this);
-                safe_handle = std::make_shared<SafeCoroutineHandle>();
-                safe_handle->SetControl(control_block);
+                safe_handle.SetControl(control_block);
                 return Task{safe_handle};
             }
 
@@ -107,35 +112,35 @@ export namespace async_core::exec
                 m_exception = std::current_exception();
             }
 
-            std::shared_ptr<SafeCoroutineHandle> get_safe_handle() const {
+            SafeCoroutineHandle get_safe_handle() const {
                 return safe_handle;
             }
         };
 
     private:
 
-        std::shared_ptr<SafeCoroutineHandle> safe_handle{nullptr};
+        SafeCoroutineHandle safe_handle;
 
         void destroy_frame() noexcept {
-            if (safe_handle) {
-                safe_handle->SetState(CoroutineState::Destroyed);
-                safe_handle->raw_handle<promise_type>().destroy();
-                safe_handle = nullptr;
+            if (safe_handle.is_valid())
+            {
+                safe_handle.SetState(CoroutineState::Destroyed);
+                safe_handle.raw_handle<promise_type>().destroy();
             }
         }
 
     public:
-        explicit Task(std::shared_ptr<SafeCoroutineHandle> handle) : safe_handle(std::move(handle)) {}
+        explicit Task(SafeCoroutineHandle handle) : safe_handle(std::move(handle)) {}
 
         Task(const Task&) = delete;
         Task& operator=(const Task&) = delete;
 
-        Task(Task&& other) noexcept : safe_handle(std::exchange(other.safe_handle, nullptr)) {}
+        Task(Task&& other) noexcept : safe_handle(std::exchange(other.safe_handle, SafeCoroutineHandle{})) {}
 
         Task& operator=(Task&& other) noexcept {
             if (this != &other) {
                 destroy_frame();
-                safe_handle = std::exchange(other.safe_handle, nullptr);
+                safe_handle = std::exchange(other.safe_handle, SafeCoroutineHandle{});
             }
             return *this;
         }
@@ -144,66 +149,71 @@ export namespace async_core::exec
             destroy_frame();
         }
 
-        std::shared_ptr<SafeCoroutineHandle> get_safe_handle() const {
+        SafeCoroutineHandle get_safe_handle() const {
             return safe_handle;
         }
 
         T get()
         {
-            if (!safe_handle) {
+            if (!safe_handle.is_valid()) {
                 throw std::runtime_error("Attempting to run an uninitialized task.");
             }
 
-            if (!safe_handle->raw_handle<promise_type>().done())
+            if (!safe_handle.raw_handle<promise_type>().done())
             {
                 std::binary_semaphore sem{0};
-                safe_handle->raw_handle<promise_type>().promise().m_semaphore = &sem;
+                safe_handle.raw_handle<promise_type>().promise().m_semaphore = &sem;
 
-                safe_handle->try_resume();
+                if (!safe_handle.try_resume()) {
+                    safe_handle.raw_handle<promise_type>().promise().m_semaphore = nullptr;
+                    throw std::runtime_error("Failed to resume task in Task::get().");
+                }
 
                 sem.acquire();
             }
 
-            if (safe_handle->raw_handle<promise_type>().promise().m_exception)
+            if (safe_handle.raw_handle<promise_type>().promise().m_exception)
             {
-                std::rethrow_exception(safe_handle->raw_handle<promise_type>().promise().m_exception);
+                std::rethrow_exception(safe_handle.raw_handle<promise_type>().promise().m_exception);
             }
 
-            if constexpr (!std::is_void_v<T>)
-            {
-                return std::move(safe_handle->raw_handle<promise_type>().promise().value);
-            }
-            else
-            {
+            if constexpr (std::is_void_v<T>) {
                 return;
+            } else if constexpr (std::is_reference_v<T>) {
+                return *safe_handle.raw_handle<promise_type>().promise().value;
+            } else {
+                return std::move(*safe_handle.raw_handle<promise_type>().promise().value);
             }
         }
 
-        bool await_ready() const noexcept
+        [[nodiscard]] bool await_ready() const noexcept
         {
-            return false;
+            return !safe_handle.is_valid() || safe_handle.raw_handle<promise_type>().done();
         }
 
         std::coroutine_handle<> await_suspend(std::coroutine_handle<> caller) noexcept
         {
-            safe_handle->raw_handle<promise_type>().promise().continuation = caller;
-            return safe_handle->raw_handle<promise_type>();
+            auto h = safe_handle.raw_handle<promise_type>();
+            h.promise().continuation = caller;
+            return h;
         }
 
         T await_resume()
         {
-            if (safe_handle->raw_handle<promise_type>().promise().m_exception)
-            {
-                std::rethrow_exception(safe_handle->raw_handle<promise_type>().promise().m_exception);
+            if (!safe_handle.is_valid()) {
+                throw std::runtime_error("co_awaiting an invalid or moved-from Task");
             }
 
-            if constexpr (!std::is_void_v<T>)
-            {
-                return std::move(safe_handle->raw_handle<promise_type>().promise().value);
+            if (safe_handle.raw_handle<promise_type>().promise().m_exception) {
+                std::rethrow_exception(safe_handle.raw_handle<promise_type>().promise().m_exception);
             }
-            else
-            {
+
+            if constexpr (std::is_void_v<T>) {
                 return;
+            } else if constexpr (std::is_reference_v<T>) {
+                return *safe_handle.raw_handle<promise_type>().promise().value;
+            } else {
+                return std::move(*safe_handle.raw_handle<promise_type>().promise().value);
             }
         }
     };

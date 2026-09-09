@@ -16,6 +16,7 @@ export import :ICoroScheduler;
 export import :CoroScheduler;
 export import :SwitchTo;
 export import :CoroThread;
+export import :ScheduleTypes;
 
 // io
 export import :IoTypes;

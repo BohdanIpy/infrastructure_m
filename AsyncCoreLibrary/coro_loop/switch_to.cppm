@@ -12,31 +12,33 @@ export namespace async_core::coro_loop
 {
     struct SwitchTo
     {
-        ICoroScheduler* m_scheduler{nullptr};
+        ICoroScheduler& m_scheduler;
         std::optional<std::size_t> m_index;
+        ScheduleStatus m_status{ScheduleStatus::Success};
 
-        explicit SwitchTo(ICoroScheduler* scheduler, const std::optional<std::size_t> index = std::nullopt) : m_scheduler(scheduler), m_index(index) {}
+        explicit SwitchTo(ICoroScheduler& scheduler, const std::optional<std::size_t> index = std::nullopt)
+            : m_scheduler(scheduler), m_index(index) {}
 
-        [[nodiscard]]
-        bool await_ready() const noexcept
-        {
-            return false;
-        }
+        [[nodiscard]] bool await_ready() const noexcept { return false; }
 
         template <typename PromiseT>
             requires exec::HasSafeHandle<PromiseT>
-        void await_suspend(std::coroutine_handle<PromiseT> coroutine) noexcept
+        bool await_suspend(std::coroutine_handle<PromiseT> coroutine) noexcept
         {
-            if (m_index.has_value())
-            {
-                m_scheduler->scheduleOnPosition(coroutine.promise().get_safe_handle(), *m_index);
+            auto safeHandle = coroutine.promise().get_safe_handle();
+            m_status = m_index.has_value()
+                ? m_scheduler.scheduleOnPosition(std::move(safeHandle), *m_index)
+                : m_scheduler.schedule(std::move(safeHandle));
+
+            if (m_status != ScheduleStatus::Success) {
+                return false;
             }
-            else
-            {
-                m_scheduler->schedule(coroutine.promise().get_safe_handle());
-            }
+            return true;
         }
 
-        void await_resume() const noexcept {}
+        [[nodiscard]] ScheduleStatus await_resume() const noexcept
+        {
+            return m_status;
+        }
     };
 }

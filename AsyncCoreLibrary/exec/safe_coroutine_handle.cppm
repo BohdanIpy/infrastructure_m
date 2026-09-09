@@ -1,8 +1,8 @@
 module;
 
 #include <atomic>
-#include <memory>
 #include <coroutine>
+#include <memory>
 #include <typeindex>
 #include <utility>
 
@@ -49,7 +49,10 @@ export namespace async_core::exec
 
         void SetState(CoroutineState state)
         {
-            m_control->state.store(state, std::memory_order_release);
+            if (m_control)
+            {
+                m_control->state.store(state, std::memory_order_release);
+            }
         }
 
         void SetControl(std::shared_ptr<CoroutineControlBlock> ctrl)
@@ -60,6 +63,10 @@ export namespace async_core::exec
         [[nodiscard]] bool is_valid() const noexcept {
             return m_control &&
                    m_control->state.load(std::memory_order_acquire) != CoroutineState::Destroyed;
+        }
+
+        [[nodiscard]] explicit operator bool() const noexcept {
+            return is_valid();
         }
 
         bool try_resume() {
@@ -90,10 +97,14 @@ export namespace async_core::exec
 
         template <typename PromiseT>
         std::coroutine_handle<PromiseT> raw_handle() const {
+            if (!m_control)
+                return nullptr;
+#ifndef NDEBUG
             if (typeid(PromiseT) != m_control->type_idx)
             {
                 throw std::bad_cast();
             }
+#endif
             auto *mem = m_control->raw_handle.address();
             std::coroutine_handle<PromiseT> handle = std::coroutine_handle<PromiseT>::from_address(mem);
             return handle;
@@ -102,6 +113,6 @@ export namespace async_core::exec
 
     template <typename Promise>
     concept HasSafeHandle = requires {
-        { std::declval<Promise&>().get_safe_handle() } -> std::same_as<std::shared_ptr<SafeCoroutineHandle>>;
+        { std::declval<Promise&>().get_safe_handle() } -> std::same_as<SafeCoroutineHandle>;
     };
 }

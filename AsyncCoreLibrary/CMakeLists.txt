@@ -19,6 +19,7 @@ target_sources(AsyncCoreLibrary
             coro_loop/coro_scheduler.cppm
             coro_loop/switch_to.cppm
             coro_loop/coro_thread.cppm
+            coro_loop/common_types.cppm
 
             io/io_loop.cppm
             io/io_types.cppm

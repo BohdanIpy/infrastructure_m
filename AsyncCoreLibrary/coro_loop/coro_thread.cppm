@@ -10,10 +10,11 @@ module;
 export module AsyncCoreLibrary:CoroThread;
 
 import :SafeCoroutineHandle;
+import :ScheduleTypes;
 
 using async_core::exec::SafeCoroutineHandle;
 
-export namespace async_core::coro_thread
+export namespace async_core::coro_loop
 {
     struct CoroThread
     {
@@ -21,6 +22,7 @@ export namespace async_core::coro_thread
         std::mutex m_mtx;
         std::condition_variable_any m_cv;
         std::jthread m_thread;
+        bool m_stopped{false};
 
         CoroThread() = default;
 
@@ -34,15 +36,25 @@ export namespace async_core::coro_thread
             );
         }
 
-        void push(std::shared_ptr<SafeCoroutineHandle> handle) {
+        [[nodiscard]]
+        ScheduleStatus push(std::shared_ptr<SafeCoroutineHandle> handle) {
+            if (handle == nullptr)
+                return ScheduleStatus::InvalidHandle;
             {
                 std::lock_guard lock(m_mtx);
+                if (m_stopped)
+                    return ScheduleStatus::SchedulerStopped;
                 m_tasks.push(std::move(handle));
             }
             m_cv.notify_one();
+            return ScheduleStatus::Success;
         }
 
         void request_stop() {
+            {
+                std::lock_guard lock(m_mtx);
+                m_stopped = true;
+            }
             m_thread.request_stop();
             m_cv.notify_all();
         }

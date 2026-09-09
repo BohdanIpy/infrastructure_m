@@ -6,15 +6,16 @@ module;
 export module AsyncCoreLibrary:ICoroScheduler;
 
 import :SafeCoroutineHandle;
+import :ScheduleTypes;
 
 export namespace async_core::coro_loop
 {
     class ICoroScheduler
     {
     public:
-        virtual void schedule(std::shared_ptr<exec::SafeCoroutineHandle> safeHandle) noexcept = 0;
+        virtual ScheduleStatus schedule(std::shared_ptr<exec::SafeCoroutineHandle> safeHandle) noexcept = 0;
 
-        virtual void scheduleOnPosition(std::shared_ptr<exec::SafeCoroutineHandle> safeHandle, std::size_t pos) noexcept = 0;
+        virtual ScheduleStatus scheduleOnPosition(std::shared_ptr<exec::SafeCoroutineHandle> safeHandle, std::size_t pos) noexcept = 0;
 
         virtual void stop_and_wait_all() = 0;
 

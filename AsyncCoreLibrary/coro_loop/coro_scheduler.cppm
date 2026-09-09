@@ -14,7 +14,6 @@ import :ICoroScheduler;
 import :SafeCoroutineHandle;
 import :CoroThread;
 
-using async_core::coro_thread::CoroThread;
 using async_core::exec::SafeCoroutineHandle;
 
 export namespace async_core::coro_loop
@@ -66,18 +65,20 @@ export namespace async_core::coro_loop
             }
         }
 
-        void scheduleOnPosition(std::shared_ptr<exec::SafeCoroutineHandle> safeHandle, std::size_t pos) noexcept override
+        ScheduleStatus scheduleOnPosition(std::shared_ptr<SafeCoroutineHandle> safeHandle, std::size_t pos) noexcept override
         {
-            if (!safeHandle->is_valid() || m_workers.empty() || m_stopped.load(std::memory_order_relaxed)) {
-                return;
-            }
+            if (!safeHandle || !safeHandle->is_valid())
+                return ScheduleStatus::InvalidHandle;
+
+            if (m_workers.empty() || m_stopped.load(std::memory_order_acquire) )
+                return ScheduleStatus::SchedulerStopped;
 
             std::size_t targetIdx = pos % m_workers.size();
-            m_workers[targetIdx]->push(std::move(safeHandle));
+            return m_workers[targetIdx]->push(std::move(safeHandle));
         }
 
-        void schedule(std::shared_ptr<exec::SafeCoroutineHandle> safeHandle) noexcept override {
-            scheduleOnPosition(std::move(safeHandle), m_rrIndex.fetch_add(1, std::memory_order_relaxed));
+        ScheduleStatus schedule(std::shared_ptr<SafeCoroutineHandle> safeHandle) noexcept override {
+            return scheduleOnPosition(std::move(safeHandle), m_rrIndex.fetch_add(1, std::memory_order_relaxed));
         }
 
         void stop_and_wait_all() override

@@ -1,7 +1,7 @@
 module;
 
-#include <exception>
 #include <coroutine>
+#include <exception>
 #include <iterator>
 #include <utility>
 
@@ -25,9 +25,10 @@ export namespace async_core::exec
             auto initial_suspend() noexcept { return std::suspend_always{}; }
             auto final_suspend() noexcept { return std::suspend_always{}; }
 
-            auto yield_value(T val)
-            {
-                value = std::move(val);
+            template <typename U>
+                requires std::convertible_to<U, T>
+            auto yield_value(U&& val) {
+                value = std::forward<U>(val);
                 return std::suspend_always{};
             }
 
@@ -46,6 +47,7 @@ export namespace async_core::exec
             using pointer = const T*;
             using reference = const T&;
             using iterator_category = std::input_iterator_tag;
+            using iterator_concept = std::input_iterator_tag;
 
             std::coroutine_handle<promise_type> m_handle{nullptr};
 
@@ -58,6 +60,12 @@ export namespace async_core::exec
                     std::rethrow_exception(m_handle.promise().m_exception);
                 }
                 return *this;
+            }
+
+            ForwardIterator operator++(int) {
+                auto tmp = *this;
+                ++(*this);
+                return tmp;
             }
 
             const T& operator*() const {
@@ -126,9 +134,8 @@ export namespace async_core::exec
             return !m_handle.done();
         }
 
-        T current_value() const
-        {
-            return this->m_handle.promise().value;
+        [[nodiscard]] const T& current_value() const noexcept {
+            return m_handle.promise().value;
         }
     };
 }
