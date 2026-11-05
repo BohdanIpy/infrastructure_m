@@ -76,11 +76,11 @@ Task<void> ParentTask() {
 }
 
 LazyTask<void> ExecuteThreadHop() {
-    std::thread::id idFirst =  std::this_thread::get_id();
+    const std::thread::id idFirst =  std::this_thread::get_id();
 
     co_await SwitchToThread{};
 
-    std::thread::id idSecond = std::this_thread::get_id();
+    const std::thread::id idSecond = std::this_thread::get_id();
 
     EXPECT_NE(idFirst, idSecond);
 }

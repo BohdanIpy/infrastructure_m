@@ -9,6 +9,7 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/NetworkCoreLibrary)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/SecurityCoreLibrary)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/CoreTheory)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/AsyncCoreLibrary)
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/HotReload)
 
 find_package(OpenSSL REQUIRED)
 

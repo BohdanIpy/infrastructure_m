@@ -1,20 +1,24 @@
 module;
 
+#include <cassert>
 #include <coroutine>
+#include <cstddef>
+#include <memory>
 #include <mutex>
 #include <queue>
-#include <vector>
-#include <cstddef>
 #include <utility>
-#include <memory>
+#include <vector>
 
 export module AsyncCoreLibrary:AsyncSemaphore;
 
 import :ICoroScheduler;
 import :SafeCoroutineHandle;
+import :ScheduleTypes;
 
 using async_core::coro_loop::ICoroScheduler;
-using async_core::exec::SafeCoroutineHandle;
+using async_core::common::ScheduleStatus;
+using async_core::common::SafeCoroutineHandle;
+using async_core::common::HasSafeHandle;
 
 export namespace async_core::sync
 {
@@ -23,15 +27,20 @@ export namespace async_core::sync
         ICoroScheduler& m_scheduler;
         std::mutex m_waiters_mtx;
         std::ptrdiff_t m_count{0};
-        std::queue<std::shared_ptr<SafeCoroutineHandle>> m_waiters;
+        std::queue<SafeCoroutineHandle> m_waiters;
 
     public:
         explicit AsyncSemaphore(ICoroScheduler& scheduler, std::ptrdiff_t initial_permits = 0) noexcept
             : m_scheduler(scheduler), m_count(initial_permits) {}
 
+        AsyncSemaphore(const AsyncSemaphore&) = delete;
+        AsyncSemaphore& operator=(const AsyncSemaphore&) = delete;
+        AsyncSemaphore(AsyncSemaphore&&) noexcept = delete;
+        AsyncSemaphore& operator=(AsyncSemaphore&&) noexcept = delete;
+
         bool try_acquire() noexcept {
             std::unique_lock lock(m_waiters_mtx);
-            if (m_count > 0) {
+            if (m_count > 0 && m_waiters.empty()) {
                 --m_count;
                 return true;
             }
@@ -41,14 +50,16 @@ export namespace async_core::sync
         struct AcquireAwaiter {
             AsyncSemaphore& m_sem;
 
-            bool await_ready() const noexcept { return false; }
+            bool await_ready() const noexcept {
+                return m_sem.try_acquire();
+            }
 
             template <typename Promise>
-                requires exec::HasSafeHandle<Promise>
+                requires HasSafeHandle<Promise>
             bool await_suspend(std::coroutine_handle<Promise> h) noexcept {
                 std::unique_lock lock(m_sem.m_waiters_mtx);
 
-                if (m_sem.m_count > 0) {
+                if (m_sem.m_count > 0 && m_sem.m_waiters.empty()) {
                     --m_sem.m_count;
                     return false;
                 }
@@ -71,28 +82,46 @@ export namespace async_core::sync
         void release(std::ptrdiff_t update = 1) noexcept {
             if (update <= 0) return;
 
-            std::vector<std::shared_ptr<SafeCoroutineHandle>> to_resume;
-            {
-                std::unique_lock lock(m_waiters_mtx);
+            while (update > 0) {
+                SafeCoroutineHandle handle_to_resume{};
+                {
+                    std::unique_lock lock(m_waiters_mtx);
 
-                while (update > 0) {
-                    if (!m_waiters.empty()) {
-                        auto safe_h = std::move(m_waiters.front());
+                    while (!m_waiters.empty()) {
+                        handle_to_resume = std::move(m_waiters.front());
                         m_waiters.pop();
 
-                        if (safe_h->is_valid()) {
-                            to_resume.push_back(std::move(safe_h));
-                            --update;
+                        if (handle_to_resume.is_valid()) {
+                            break;
                         }
-                    } else {
+                    }
+
+                    if (!handle_to_resume.is_valid()) {
                         m_count += update;
-                        break;
+                        return;
                     }
                 }
-            }
 
-            for (auto& safe_h : to_resume) {
-                m_scheduler.schedule(std::move(safe_h));
+                const ScheduleStatus status = m_scheduler.schedule(std::move(handle_to_resume));
+
+                if (status == ScheduleStatus::Success) {
+                    --update;
+                    continue;
+                }
+
+                if (status == ScheduleStatus::InvalidHandle) {
+                    continue;
+                }
+
+                if (status == ScheduleStatus::SchedulerStopped) {
+                    std::unique_lock lock(m_waiters_mtx);
+                    m_count += update;
+                    return;
+                }
+
+                std::unique_lock lock(m_waiters_mtx);
+                m_count += update;
+                return;
             }
         }
     };

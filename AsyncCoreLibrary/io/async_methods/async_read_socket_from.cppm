@@ -13,6 +13,8 @@ import :IoTypes;
 import :IoLoop;
 import :SafeCoroutineHandle;
 
+using async_core::common::HasSafeHandle;
+
 export namespace async_core::io
 {
     class AsyncReadSocketFrom
@@ -43,7 +45,7 @@ export namespace async_core::io
         }
 
         template <typename PromiseT>
-            requires exec::HasSafeHandle<PromiseT>
+            requires HasSafeHandle<PromiseT>
         void await_suspend(std::coroutine_handle<PromiseT> h) {
             m_ctx.safe_coro = h.promise().get_safe_handle();
 

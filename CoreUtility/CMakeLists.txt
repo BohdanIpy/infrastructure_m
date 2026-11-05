@@ -7,8 +7,12 @@ target_sources(CoreUtility
         FILES
             core_utility.cppm
 
+            # general errors, OBSOLETE
             errors/io_error.cppm
 
             helpers/wrappers.cppm
             helpers/time.cppm
+
+            # uuid util
+            uuid/uuid.cppm
 )

@@ -12,13 +12,14 @@ export module AsyncCoreLibrary:CoroThread;
 import :SafeCoroutineHandle;
 import :ScheduleTypes;
 
-using async_core::exec::SafeCoroutineHandle;
+using async_core::common::SafeCoroutineHandle;
+using async_core::common::ScheduleStatus;
 
 export namespace async_core::coro_loop
 {
     struct CoroThread
     {
-        std::queue<std::shared_ptr<SafeCoroutineHandle>> m_tasks;
+        std::queue<SafeCoroutineHandle> m_tasks;
         std::mutex m_mtx;
         std::condition_variable_any m_cv;
         std::jthread m_thread;
@@ -37,26 +38,55 @@ export namespace async_core::coro_loop
         }
 
         [[nodiscard]]
-        ScheduleStatus push(std::shared_ptr<SafeCoroutineHandle> handle) {
-            if (handle == nullptr)
+        ScheduleStatus push(SafeCoroutineHandle handle) {
+            if (!handle.is_valid())
                 return ScheduleStatus::InvalidHandle;
+
             {
                 std::lock_guard lock(m_mtx);
                 if (m_stopped)
                     return ScheduleStatus::SchedulerStopped;
-                m_tasks.push(std::move(handle));
+
+                try {
+                    m_tasks.push(std::move(handle));
+                }
+                catch (const std::bad_alloc&) {
+                    return ScheduleStatus::OutOfMemory;
+                }
             }
+
             m_cv.notify_one();
             return ScheduleStatus::Success;
+        }
+
+        SafeCoroutineHandle pop_for_worker() {
+            std::unique_lock lock(m_mtx);
+
+            m_cv.wait(lock, [this] {
+                return !m_tasks.empty() || m_stopped;
+            });
+
+            if (!m_tasks.empty()) {
+                auto handle = std::move(m_tasks.front());
+                m_tasks.pop();
+                return handle;
+            }
+            return {};
         }
 
         void request_stop() {
             {
                 std::lock_guard lock(m_mtx);
                 m_stopped = true;
+                (void)m_thread.request_stop();
             }
-            m_thread.request_stop();
             m_cv.notify_all();
+        }
+
+        void join() {
+            if (m_thread.joinable() && m_thread.get_id() != std::this_thread::get_id()) {
+                m_thread.join();
+            }
         }
 
         CoroThread(const CoroThread&) = delete;
@@ -66,6 +96,7 @@ export namespace async_core::coro_loop
 
         ~CoroThread() {
             request_stop();
+            join();
         }
     };
 }

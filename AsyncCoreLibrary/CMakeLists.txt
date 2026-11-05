@@ -6,12 +6,29 @@ target_sources(AsyncCoreLibrary
         FILE_SET CXX_MODULES
         BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
         FILES
+            # the main gather point
             core_async.cppm
+
+            # common types, can be used widely
+            common/exceptions.cppm
+            common/schedule_types.cppm
+            common/task_types.cppm
+            common/coroutine_state.cppm
+            common/safe_coroutine_handle.cppm
+            common/cancelling_routines.cppm
+            common/awaitable_cancellation_base.cppm
+
+            # policies for building a promise_type for a coroutine
+            policy/continuation_policy.cppm
+            policy/exception_handling_policy.cppm
+            policy/return_value_policy.cppm
+            policy/start_end_policy.cppm
 
             exec/detached_task.cppm
             exec/generator.cppm
             exec/task.cppm
-            exec/safe_coroutine_handle.cppm
+            exec/basic_promise_type.cppm
+            exec/task_base.cppm
 
             context/switch_to_thread.cppm
 
@@ -19,7 +36,6 @@ target_sources(AsyncCoreLibrary
             coro_loop/coro_scheduler.cppm
             coro_loop/switch_to.cppm
             coro_loop/coro_thread.cppm
-            coro_loop/common_types.cppm
 
             io/io_loop.cppm
             io/io_types.cppm
@@ -57,6 +73,7 @@ pkg_check_modules(URING REQUIRED IMPORTED_TARGET liburing)
 target_link_libraries(AsyncCoreLibrary
     PRIVATE
         PkgConfig::URING
+        CoreUtility
 )
 
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/tests)

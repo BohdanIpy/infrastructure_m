@@ -17,8 +17,8 @@ import :ICoroScheduler;
 import :SafeCoroutineHandle;
 
 using async_core::coro_loop::ICoroScheduler;
-using async_core::exec::SafeCoroutineHandle;
-using async_core::exec::HasSafeHandle;
+using async_core::common::SafeCoroutineHandle;
+using async_core::common::HasSafeHandle;
 
 export namespace async_core::sync
 {

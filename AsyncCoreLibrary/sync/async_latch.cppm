@@ -2,47 +2,76 @@ module;
 
 #include <atomic>
 #include <coroutine>
+#include <cstddef>
 #include <memory>
+#include <mutex>
+#include <utility>
+#include <vector>
 
 export module AsyncCoreLibrary:AsyncLatch;
 
 import :SafeCoroutineHandle;
 
-using async_core::exec::SafeCoroutineHandle;
-using async_core::exec::HasSafeHandle;
+using async_core::common::SafeCoroutineHandle;
+using async_core::common::HasSafeHandle;
 
 export namespace async_core::sync
 {
     class AsyncLatch
     {
-        std::atomic<std::size_t> m_count;
-        std::atomic<std::shared_ptr<SafeCoroutineHandle>> m_waiter{nullptr};
+        std::atomic<std::ptrdiff_t> m_count;
+        std::mutex m_mtx;
+        std::vector<SafeCoroutineHandle> m_waiters;
 
     public:
-        explicit AsyncLatch(std::size_t count) noexcept
+        explicit AsyncLatch(const std::ptrdiff_t count) noexcept
             : m_count(count) {}
 
         AsyncLatch(const AsyncLatch&) = delete;
         AsyncLatch& operator=(const AsyncLatch&) = delete;
 
-        void count_down(std::size_t n = 1) noexcept
+        void count_down(const std::ptrdiff_t n = 1) noexcept
         {
-            if (m_count.fetch_sub(n, std::memory_order_acq_rel) == n)
+            if (n <= 0) return;
+
+            std::vector<SafeCoroutineHandle> to_resume;
             {
-                auto waiter = m_waiter.exchange(nullptr, std::memory_order_acq_rel);
-                if (waiter && waiter->is_valid())
+                std::unique_lock lock(m_mtx);
+                const auto current = m_count.load(std::memory_order_relaxed);
+                if (current <= 0)
                 {
-                    waiter->try_resume();
+                    return;
+                }
+                const auto next = current - n;
+                m_count.store(next, std::memory_order_release);
+                if (next <= 0)
+                {
+                    to_resume = std::move(m_waiters);
+                    m_waiters.clear();
+                }
+            }
+
+            for (auto& waiter : to_resume)
+            {
+                if (waiter.is_valid())
+                {
+                    // TODO insert some telemetry, or kind of
+                    (void)waiter.try_resume();
                 }
             }
         }
 
         [[nodiscard]] bool is_ready() const noexcept
         {
-            return m_count.load(std::memory_order_acquire) == 0;
+            return m_count.load(std::memory_order_acquire) <= 0;
         }
 
-        bool await_ready() const noexcept
+        [[nodiscard]] bool try_wait() const noexcept
+        {
+            return is_ready();
+        }
+
+        [[nodiscard]] bool await_ready() const noexcept
         {
             return is_ready();
         }
@@ -51,14 +80,13 @@ export namespace async_core::sync
             requires HasSafeHandle<PromiseT>
         bool await_suspend(std::coroutine_handle<PromiseT> requesting_coroutine) noexcept
         {
-            m_waiter.store(requesting_coroutine.promise().get_safe_handle(), std::memory_order_release);
+            std::unique_lock lock(m_mtx);
             if (is_ready())
             {
-                if (m_waiter.exchange(nullptr, std::memory_order_acq_rel) != nullptr)
-                {
-                    return false;
-                }
+                return false;
             }
+
+            m_waiters.push_back(requesting_coroutine.promise().get_safe_handle());
             return true;
         }
 

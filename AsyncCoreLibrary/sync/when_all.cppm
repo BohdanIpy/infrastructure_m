@@ -20,7 +20,7 @@ import :Task;
 import :AsyncLatch;
 import :DetachedTask;
 
-using async_core::exec::SafeCoroutineHandle;
+using async_core::common::SafeCoroutineHandle;
 using async_core::coro_loop::ICoroScheduler;
 using async_core::sync::sync_wait;
 using async_core::sync::AsyncLatch;
@@ -78,7 +78,7 @@ namespace details
                                 latch,
                                 results
                             );
-                            scheduler.schedule(launcher.get_safe_handle());
+                            (void)scheduler.schedule(launcher.get_safe_handle());
                         }(),
                         ...
                     );
@@ -101,9 +101,9 @@ namespace details
             void await_suspend(std::coroutine_handle<> handle)
             {
                 m_awaitableTask = std::make_unique<Task<ReturnType>>(launchAll(m_scheduler, std::move(m_tasks)));
-                m_awaitableTask->get_safe_handle()->template raw_handle<typename Task<ReturnType>::promise_type>().promise().continuation = handle;
+                m_awaitableTask->get_safe_handle().template raw_handle<typename Task<ReturnType>::promise_type>().promise().continuation = handle;
 
-                m_scheduler.schedule(m_awaitableTask->get_safe_handle());
+                (void)m_scheduler.schedule(m_awaitableTask->get_safe_handle());
             }
 
             ReturnType await_resume()

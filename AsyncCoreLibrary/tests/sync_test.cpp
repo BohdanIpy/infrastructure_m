@@ -20,7 +20,7 @@ static Task<void> TestBasicSignal(AsyncAutoResetEvent& event, bool& resumed) {
 
 TEST(Exec, AsyncAutoResetEvent) {
     std::unique_ptr<ICoroScheduler> scheduler = std::make_unique<CoroScheduler>(2);
-    AsyncAutoResetEvent event{*scheduler, false};
+    AsyncAutoResetEvent event{scheduler.get(), false};
     bool resumed = false;
 
     std::thread producer([&event]() {
@@ -35,6 +35,90 @@ TEST(Exec, AsyncAutoResetEvent) {
     }
 
     EXPECT_TRUE(resumed);
+}
+
+// ====================================
+
+static Task<void> TestBasicPreCancel(AsyncAutoResetEvent& event, bool& resumed) {
+    auto res = co_await event;
+    if (!res) co_return;
+    resumed = true;
+}
+
+TEST(Exec, AsyncAutoResetEventPreCancel)
+{
+    std::unique_ptr<ICoroScheduler> scheduler = std::make_unique<CoroScheduler>(2);
+    AsyncAutoResetEvent event{scheduler.get(), false};
+    bool resumed = false;
+    auto t = TestBasicPreCancel(event, resumed);
+    std::thread w{[&]()
+    {
+        std::this_thread::sleep_for(50ms);
+        t.cancel();
+    }};
+    sync_wait(t);
+    if (w.joinable())
+    {
+        w.join();
+    }
+    EXPECT_FALSE(resumed);
+}
+
+// mid cancel
+
+static Task<std::optional<int>> LeafDummy(AsyncAutoResetEvent& event)
+{
+    const bool acquired = co_await event;
+    if (!acquired) {
+        co_return std::nullopt;
+    }
+    co_return 42;
+}
+
+// Level 2 (Middle Parent): Awaits the leaf task
+static Task<std::optional<int>> MiddleParent(AsyncAutoResetEvent& event)
+{
+    const auto leaf_result = co_await LeafDummy(event);
+    if (!leaf_result.has_value()) {
+        co_return std::nullopt;
+    }
+    co_return *leaf_result + 100;
+}
+
+// Level 1 (Root Grandparent): Awaits the middle parent
+static Task<std::optional<int>> RootGrandparent(AsyncAutoResetEvent& event)
+{
+    co_return co_await MiddleParent(event);
+}
+
+TEST(AsyncAutoResetEventTest, DeepNestedMidExecutionCancellation)
+{
+    std::unique_ptr<ICoroScheduler> scheduler = std::make_unique<CoroScheduler>(2);
+    AsyncAutoResetEvent event(scheduler.get(), /*initially_signaled=*/false);
+
+    std::stop_source stop_src;
+
+    auto root_task = RootGrandparent(event);
+    root_task.bind_stop_token(stop_src.get_token());
+    root_task.try_resume();
+
+    EXPECT_FALSE(root_task.is_ready());
+
+    (void)stop_src.request_stop();
+
+    //EXPECT_TRUE(root_task.is_ready());
+    EXPECT_EQ(sync_wait(std::move(root_task)), 42);
+
+    // Sanity Check: Ensure set() still works normally for subsequent waiters after cancellation
+    bool secondary_acquired = false;
+    auto secondary_task = [&]() -> Task<void> {
+        secondary_acquired = co_await event;
+    }();
+    secondary_task.try_resume();
+
+    event.set();
+    EXPECT_TRUE(secondary_task.is_ready());
+    EXPECT_TRUE(secondary_acquired);
 }
 
 // ====================================
@@ -62,7 +146,7 @@ static Task<void> TestAutoResetSingleUnblock(AsyncAutoResetEvent& event, std::ve
 TEST(Exec, UnblockAsyncAutoResetEvent)
 {
     std::unique_ptr<ICoroScheduler> scheduler = std::make_unique<CoroScheduler>(2);
-    AsyncAutoResetEvent event{*scheduler, false};
+    AsyncAutoResetEvent event{scheduler.get(), false};
     std::vector<int> order;
 
     std::mutex mtx;
@@ -100,7 +184,7 @@ static Task<void> TestPreSignaled(AsyncAutoResetEvent& event, const std::atomic<
 TEST(Exec, PreSignaled)
 {
     std::unique_ptr<ICoroScheduler> scheduler = std::make_unique<CoroScheduler>(2);
-    AsyncAutoResetEvent event{*scheduler, false};
+    AsyncAutoResetEvent event{scheduler.get(), false};
 
     std::atomic second_finished{false};
 

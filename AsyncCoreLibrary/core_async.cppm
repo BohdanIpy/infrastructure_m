@@ -2,11 +2,27 @@ module;
 
 export module AsyncCoreLibrary;
 
+// common
+export import :CancellingRoutines;
+export import :CoroutineStates;
+export import :Exceptions;
+export import :ScheduleTypes;
+export import :TaskTypes;
+export import :SafeCoroutineHandle;
+export import :AwaitableCancellationBase;
+
+// policy
+export import :ContinuationPolicy;
+export import :ExceptionHandlingPolicy;
+export import :ReturnValuePolicy;
+export import :StartEndPolicy;
+
 // exec
+export import :TaskBase;
 export import :Task;
 export import :DetachedTask;
 export import :Generator;
-export import :SafeCoroutineHandle;
+export import :BasicPromiseType;
 
 // context
 export import :SwitchToThread;

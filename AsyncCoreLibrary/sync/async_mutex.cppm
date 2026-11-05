@@ -1,20 +1,23 @@
 module;
 
+#include <atomic>
+#include <cassert>
 #include <coroutine>
+#include <memory>
 #include <mutex>
 #include <queue>
 #include <utility>
-#include <memory>
-#include <atomic>
-#include <cassert>
 
 export module AsyncCoreLibrary:AsyncMutex;
 
 import :ICoroScheduler;
 import :SafeCoroutineHandle;
+import :ScheduleTypes;
 
 using async_core::coro_loop::ICoroScheduler;
-using async_core::exec::SafeCoroutineHandle;
+using async_core::common::ScheduleStatus;
+using async_core::common::SafeCoroutineHandle;
+using async_core::common::HasSafeHandle;
 
 export namespace async_core::sync
 {
@@ -23,11 +26,16 @@ export namespace async_core::sync
         ICoroScheduler& m_scheduler;
         std::atomic<bool> m_locked{false};
         std::mutex m_mtx;
-        std::queue<std::shared_ptr<SafeCoroutineHandle>> m_waiters;
+        std::queue<SafeCoroutineHandle> m_waiters;
 
     public:
         explicit AsyncMutex(ICoroScheduler& scheduler) noexcept
             : m_scheduler(scheduler) {}
+
+        AsyncMutex(const AsyncMutex&) = delete;
+        AsyncMutex& operator=(const AsyncMutex&) = delete;
+        AsyncMutex(AsyncMutex&&) noexcept = delete;
+        AsyncMutex& operator=(AsyncMutex&&) noexcept = delete;
 
         class [[nodiscard]] ScopedLock {
             AsyncMutex* m_mutex{nullptr};
@@ -75,17 +83,16 @@ export namespace async_core::sync
             }
 
             template <typename Promise>
-                requires exec::HasSafeHandle<Promise>
+                requires HasSafeHandle<Promise>
             bool await_suspend(std::coroutine_handle<Promise> h) noexcept {
                 std::unique_lock lock(m_mutex.m_mtx);
 
-                if (!m_mutex.m_locked.load(std::memory_order_relaxed)) {
+                if (!m_mutex.m_locked.load(std::memory_order_relaxed) && m_mutex.m_waiters.empty()) {
                     m_mutex.m_locked.store(true, std::memory_order_release);
                     return false;
                 }
 
-                auto safe_h = h.promise().get_safe_handle();
-                m_mutex.m_waiters.push(std::move(safe_h));
+                m_mutex.m_waiters.push(h.promise().get_safe_handle());
                 return true;
             }
 
@@ -95,12 +102,12 @@ export namespace async_core::sync
         };
 
         bool try_lock() noexcept {
-            bool expected = false;
-            return m_locked.compare_exchange_strong(
-                expected, true,
-                std::memory_order_acquire,
-                std::memory_order_relaxed
-            );
+            std::unique_lock lock(m_mtx);
+            if (m_locked.load(std::memory_order_relaxed) || !m_waiters.empty()) {
+                return false;
+            }
+            m_locked.store(true, std::memory_order_release);
+            return true;
         }
 
         [[nodiscard]] LockAwaiter lock_async() noexcept {
@@ -112,25 +119,50 @@ export namespace async_core::sync
         }
 
         void unlock() noexcept {
-            std::shared_ptr<SafeCoroutineHandle> handle_to_resume = nullptr;
-            {
-                std::unique_lock lock(m_mtx);
-                assert(m_locked.load(std::memory_order_relaxed) && "Double unlock detected on AsyncMutex");
-                while (!m_waiters.empty()) {
-                    handle_to_resume = std::move(m_waiters.front());
-                    m_waiters.pop();
+            while (true) {
+                SafeCoroutineHandle handle_to_resume{};
+                {
+                    std::unique_lock lock(m_mtx);
+                    assert(m_locked.load(std::memory_order_relaxed) && "Double unlock detected on AsyncMutex");
 
-                    if (handle_to_resume && handle_to_resume->is_valid()) {
-                        break;
+                    while (!m_waiters.empty()) {
+                        handle_to_resume = std::move(m_waiters.front());
+                        m_waiters.pop();
+
+                        if (handle_to_resume.is_valid()) {
+                            break;
+                        }
                     }
-                    handle_to_resume = nullptr;
+
+                    if (!handle_to_resume.is_valid()) {
+                        m_locked.store(false, std::memory_order_release);
+                        return;
+                    }
                 }
-                if (!handle_to_resume) {
-                    m_locked.store(false, std::memory_order_release);
+
+                const ScheduleStatus status = m_scheduler.schedule(std::move(handle_to_resume));
+
+                if (status == ScheduleStatus::Success) {
                     return;
                 }
+
+                if (status == ScheduleStatus::InvalidHandle) {
+                    continue;
+                }
+
+                if (status == ScheduleStatus::SchedulerStopped) {
+                    std::unique_lock lock(m_mtx);
+                    if (m_waiters.empty()) {
+                        m_locked.store(false, std::memory_order_release);
+                    } else {
+                        lock.unlock();
+                        continue;
+                    }
+                    return;
+                }
+
+                return;
             }
-            m_scheduler.schedule(std::move(handle_to_resume));
         }
     };
 }

@@ -22,30 +22,40 @@ if(BUILD_TESTING)
     )
 
     foreach(test_spec IN LISTS TEST_SUITES)
-
         string(REPLACE "|" ";" test_tuple "${test_spec}")
-        list(GET test_tuple 0 target_name)
+        list(GET test_tuple 0 base_target_name)
         list(GET test_tuple 1 source_file)
-        list(GET test_tuple 2 ctest_name)
+        list(GET test_tuple 2 base_ctest_name)
 
-        # Build Executable Target
-        add_executable(${target_name} ${CMAKE_CURRENT_SOURCE_DIR}/${source_file})
+        # Loop over both sanitizer variants
+        foreach(variant "tsan" "asan" "plain")
+            set(target_name "${base_target_name}_${variant}")
+            set(ctest_name "${base_ctest_name}_${variant}")
 
-        target_link_libraries(${target_name}
-                PRIVATE
-                GTest::gtest
-                GTest::gtest_main
-                GTest::gmock
-                GTest::gmock_main
-                AsyncCoreLibrary
-        )
+            # Build Executable Target
+            add_executable(${target_name} ${CMAKE_CURRENT_SOURCE_DIR}/${source_file})
 
-        # ThreadSanitizer Flags
-        target_compile_options(${target_name} PRIVATE -fsanitize=thread)
-        target_link_options(${target_name} PRIVATE -fsanitize=thread)
+            target_link_libraries(${target_name}
+                    PRIVATE
+                    GTest::gtest
+                    GTest::gtest_main
+                    GTest::gmock
+                    GTest::gmock_main
+                    AsyncCoreLibrary
+            )
 
-        # Register with CTest
-        add_test(NAME ${ctest_name} COMMAND $<TARGET_FILE:${target_name}>)
+            # Apply specific sanitizer flags per target variant
+            if(variant STREQUAL "tsan")
+                target_compile_options(${target_name} PRIVATE -fsanitize=thread -fno-omit-frame-pointer)
+                target_link_options(${target_name} PRIVATE -fsanitize=thread)
+            elseif(variant STREQUAL "asan")
+                target_compile_options(${target_name} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+                target_link_options(${target_name} PRIVATE -fsanitize=address,undefined)
+            endif()
+
+            # Register with CTest
+            add_test(NAME ${ctest_name} COMMAND $<TARGET_FILE:${target_name}>)
+        endforeach()
     endforeach()
 
 endif()

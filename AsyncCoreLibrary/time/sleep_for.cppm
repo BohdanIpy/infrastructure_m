@@ -1,16 +1,22 @@
 module;
 
-#include <type_traits>
-#include <concepts>
+#include <cassert>
 #include <chrono>
 #include <coroutine>
+#include <stop_token>
 
 export module AsyncCoreLibrary:SleepFor;
 
 import :TimerQueue;
 import :SafeCoroutineHandle;
+import :CancellingRoutines;
+import :CoroutineStates;
+import :AwaitableCancellationBase;
 
-using async_core::exec::HasSafeHandle;
+using async_core::common::HasSafeHandle;
+using async_core::common::has_get_stop_token_v;
+using async_core::common::AwaitableCancellationBase;
+using async_core::common::AwaitableState;
 
 using namespace std::chrono;
 
@@ -18,41 +24,79 @@ export namespace async_core::time
 {
     using Clock = steady_clock;
 
-    template <typename T>
-    struct is_duration : std::false_type {};
-
-    template <typename Rep, typename Period>
-    struct is_duration<duration<Rep, Period>> : std::true_type {};
-
-    template <typename T>
-    inline constexpr bool is_duration_v = is_duration<T>::value;
-
-    template <typename T>
-    concept DurationType = is_duration_v<std::remove_cvref_t<T>>;
-
-    class SleepFor
+    class SleepFor : public AwaitableCancellationBase
     {
-        TimerQueue& m_queue;
+        TimerQueue* m_queue{nullptr};
         const milliseconds m_duration;
+        UUID m_uuid{};
 
     public:
-        template <DurationType DurationT>
-        explicit SleepFor(TimerQueue& queue, const DurationT& duration) :
-            m_queue(queue),
-            m_duration(std::chrono::duration_cast<milliseconds>(duration)) {}
+        SleepFor(TimerQueue& queue, const milliseconds duration) noexcept
+            : m_queue(&queue), m_duration(duration)
+        {
+            assert(m_queue != nullptr);
+        }
 
         bool await_ready() const noexcept
         {
-            return m_duration <= milliseconds::zero();
+            return m_duration <= milliseconds(0);
         }
 
         template <typename PromiseT>
-            requires HasSafeHandle<PromiseT>
-        void await_suspend(std::coroutine_handle<PromiseT> h)
+            requires HasSafeHandle<PromiseT> && has_get_stop_token_v<PromiseT>
+        bool await_suspend(std::coroutine_handle<PromiseT> h)
         {
-            m_queue.AddTimer(h.promise().get_safe_handle(), m_duration);
+            assert(m_queue != nullptr);
+            auto& promise = h.promise();
+
+            std::stop_token token = promise.get_stop_token();
+
+            if (token.stop_requested()) {
+                m_state.store(AwaitableState::Cancelled, std::memory_order_relaxed);
+                return false;
+            }
+
+            setup_promise_erasure(promise);
+
+            auto safe_handle = promise.get_safe_handle();
+
+            auto [status, real_uuid] = m_queue->AddTimer(safe_handle, m_duration);
+            if (status != TimerStatus::Success) {
+                m_state.store(AwaitableState::Cancelled, std::memory_order_relaxed);
+                return false;
+            }
+
+            this->m_uuid = real_uuid;
+
+            if (token.stop_possible()) {
+                promise.set_cancellation_callback(
+                    token,
+                    [](void* ctx) noexcept {
+                        auto* self = static_cast<SleepFor*>(ctx);
+
+                        if (self->try_mark_cancelled()) {
+                            auto* prom = static_cast<PromiseT*>(self->m_promise_ptr);
+                            (void)prom->get_safe_handle().try_resume();
+                        }
+                    },
+                    this
+                );
+
+                if (token.stop_requested()) {
+                    if (try_mark_cancelled()) {
+                        promise.clear_cancellation_callback();
+                        (void)m_queue->CancelTimer(this->m_uuid);
+                        return false;
+                    }
+                }
+            }
+
+            return true;
         }
 
-        void await_resume() const noexcept {}
+        bool await_resume() noexcept
+        {
+            return consume_result();
+        }
     };
 }

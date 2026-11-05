@@ -21,7 +21,7 @@ using async_core::coro_loop::ICoroScheduler;
 export namespace async_core::io
 {
     class IoQueue {
-        ICoroScheduler* m_scheduler{nullptr};
+        ICoroScheduler& m_scheduler;
         io_uring m_ring{};
         std::unique_ptr<std::jthread> m_thread;
 
@@ -30,7 +30,7 @@ export namespace async_core::io
             while (!stop_token.stop_requested()) {
                 io_uring_cqe* cqe = nullptr;
 
-                int ret = io_uring_wait_cqe(&m_ring, &cqe);
+                const int ret = io_uring_wait_cqe(&m_ring, &cqe);
                 [[unlikely]]
                 if (ret < 0) {
                     if (-ret == EINTR) continue;
@@ -45,12 +45,9 @@ export namespace async_core::io
                     if (ctx->on_complete) {
                         ctx->on_complete(ctx, cqe->res);
                     }
-                    else if (ctx->safe_coro->is_valid()) {
-                        if (m_scheduler) {
-                            m_scheduler->schedule(std::move(ctx->safe_coro));
-                        } else {
-                            ctx->safe_coro->try_resume();
-                        }
+                    else if (ctx->safe_coro.is_valid()) {
+                        // TODO insert some telemetry, or kind of
+                        (void)m_scheduler.schedule(std::move(ctx->safe_coro));
                     }
                 }
 
@@ -60,7 +57,7 @@ export namespace async_core::io
         }
 
     public:
-        explicit IoQueue(ICoroScheduler* scheduler, const uint32_t entries = 512)
+        explicit IoQueue(ICoroScheduler& scheduler, const uint32_t entries = 512)
             : m_scheduler(scheduler)
         {
             if (int ret = io_uring_queue_init(entries, &m_ring, 0); ret < 0) {
@@ -93,7 +90,7 @@ export namespace async_core::io
         IoQueue& operator=(const IoQueue&) = delete;
 
         [[nodiscard]]
-        ICoroScheduler* GetScheduler() const
+        ICoroScheduler& GetScheduler() const
         {
             return m_scheduler;
         }

@@ -15,7 +15,7 @@ export module AsyncCoreLibrary:IoTypes;
 
 import :SafeCoroutineHandle;
 
-using async_core::exec::SafeCoroutineHandle;
+using async_core::common::SafeCoroutineHandle;
 
 export namespace async_core::io
 {
@@ -68,7 +68,7 @@ export namespace async_core::io
 
     struct IoCtx
     {
-        std::shared_ptr<SafeCoroutineHandle> safe_coro{};
+        SafeCoroutineHandle safe_coro{};
         void (*on_complete)(IoCtx* ctx, int32_t res){nullptr};
         int32_t result{0};
         EventType type{EventType::READ};
