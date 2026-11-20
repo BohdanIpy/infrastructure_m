@@ -16,7 +16,10 @@ export module AsyncCoreLibrary:IoLoop;
 import :ICoroScheduler;
 import :IoTypes;
 
-using async_core::coro_loop::ICoroScheduler;
+namespace async_core::io
+{
+    using coro_loop::ICoroScheduler;
+}
 
 export namespace async_core::io
 {
@@ -45,7 +48,7 @@ export namespace async_core::io
                     if (ctx->on_complete) {
                         ctx->on_complete(ctx, cqe->res);
                     }
-                    else if (ctx->safe_coro.is_valid()) {
+                    else if (ctx->safe_coro.IsValid()) {
                         // TODO insert some telemetry, or kind of
                         (void)m_scheduler.schedule(std::move(ctx->safe_coro));
                     }

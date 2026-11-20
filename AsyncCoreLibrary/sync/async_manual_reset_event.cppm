@@ -10,10 +10,11 @@ export module AsyncCoreLibrary:AsyncManualResetEvent;
 
 import :ICoroScheduler;
 import :SafeCoroutineHandle;
+import :Concepts;
 
 using async_core::coro_loop::ICoroScheduler;
 using async_core::common::SafeCoroutineHandle;
-using async_core::common::HasSafeHandle;
+using async_core::common::HasSafeHandleConcept;
 
 export namespace async_core::sync
 {
@@ -37,7 +38,7 @@ export namespace async_core::sync
             }
 
             template <typename Promise>
-                requires HasSafeHandle<Promise>
+                requires HasSafeHandleConcept<Promise>
             bool await_suspend(std::coroutine_handle<Promise> h) noexcept
             {
                 std::unique_lock lock(event.m_mtx);
@@ -47,7 +48,7 @@ export namespace async_core::sync
                     return false;
                 }
 
-                event.m_handles.push_back(h.promise().get_safe_handle());
+                event.m_handles.push_back(h.promise().GetSafeHandle());
                 return true;
             }
 
@@ -78,7 +79,7 @@ export namespace async_core::sync
 
                 for (auto& safe_h : m_handles)
                 {
-                    if (safe_h.is_valid())
+                    if (safe_h.IsValid())
                     {
                         to_resume.push_back(std::move(safe_h));
                     }
@@ -88,7 +89,7 @@ export namespace async_core::sync
 
             for (auto& safe_h : to_resume)
             {
-                if (safe_h.is_valid())
+                if (safe_h.IsValid())
                 {
                     // TODO insert some telemetry, or kind of
                     (void)m_scheduler.schedule(std::move(safe_h));

@@ -23,7 +23,7 @@ export namespace async_core::sync
 
         std::binary_semaphore signal{0};
 
-        auto handle = task.get_safe_handle().template raw_handle<Promise>();
+        auto handle = task.GetSafeHandle().template RawHandle<Promise>();
         auto& promise = handle.promise();
 
         promise.continuation = nullptr;

@@ -1,70 +1,33 @@
 module;
 
 #include <atomic>
-#include <concepts>
+#include <stop_token>
 
 export module AsyncCoreLibrary:AwaitableCancellationBase;
 
 import :CoroutineStates;
+import :Concepts;
+
+namespace async_core::common
+{
+    using common::CancellableAwaiterConcept;
+}
 
 export namespace async_core::common
 {
-    class AwaitableCancellationBase
+    template <typename Derived>
+    struct AwaitableCancellationBase
     {
-    protected:
         std::atomic<AwaitableState> m_state{AwaitableState::Pending};
-        void* m_promise_ptr{nullptr};
-        void(*m_clear_fn)(void*) noexcept{nullptr};
+        std::stop_token m_st;
 
-        template <typename PromiseT>
-        void setup_promise_erasure(PromiseT& promise) noexcept
-        {
-            m_promise_ptr = static_cast<void*>(&promise);
-            m_clear_fn = [](void* ptr) noexcept {
-                static_cast<PromiseT*>(ptr)->clear_cancellation_callback();
-            };
-        }
+        explicit AwaitableCancellationBase(std::stop_token st) : m_st(std::move(st)) {}
 
-        void cleanup_cancellation_callback() noexcept
-        {
-            if (m_promise_ptr && m_clear_fn) {
-                m_clear_fn(m_promise_ptr);
-                m_promise_ptr = nullptr;
-                m_clear_fn = nullptr;
-            }
-        }
+        static_assert(
+            CancellableAwaiterConcept<Derived>,
+            "Error: Derived awaiter must implement 'void register_cancellation(std::stop_token)'!"
+        );
 
-        bool try_mark_cancelled() noexcept
-        {
-            AwaitableState expected = AwaitableState::Pending;
-            return m_state.compare_exchange_strong(
-                expected, AwaitableState::Cancelled,
-                std::memory_order_acq_rel, std::memory_order_relaxed
-            );
-        }
-
-        bool try_mark_completed() noexcept
-        {
-            AwaitableState expected = AwaitableState::Pending;
-            return m_state.compare_exchange_strong(
-                expected, AwaitableState::Completed,
-                std::memory_order_acq_rel, std::memory_order_relaxed
-            );
-        }
-
-    public:
-        [[nodiscard]] bool is_cancelled() const noexcept
-        {
-            return m_state.load(std::memory_order_acquire) == AwaitableState::Cancelled;
-        }
-
-        [[nodiscard]] bool consume_result() noexcept
-        {
-            const bool cancelled = is_cancelled();
-            if (!cancelled) {
-                cleanup_cancellation_callback();
-            }
-            return !cancelled; // Returns true if successful, false if cancelled
-        }
+        virtual ~AwaitableCancellationBase() = default;
     };
 }

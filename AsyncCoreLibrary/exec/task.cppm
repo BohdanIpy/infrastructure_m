@@ -13,38 +13,69 @@ export module AsyncCoreLibrary:Task;
 
 import :SafeCoroutineHandle;
 import :CancellingRoutines;
-
 import :StartEndPolicy;
 import :BasicPromiseType;
 import :TaskBase;
+import :TaskCancellable;
+import :Exceptions;
+import :TaskTypes;
+import :Concepts;
 
-
-using async_core::common::SafeCoroutineHandle;
-using async_core::policy::LazyStartPolicy;
-using async_core::policy::EagerStartPolicy;
-using async_core::common::has_get_stop_token_v;
+namespace async_core::exec
+{
+    using common::SafeCoroutineHandle;
+    using policy::LazyStartPolicy;
+    using policy::EagerStartPolicy;
+    using common::HasGetStopTokenConcept;
+    using exec::TaskCancellable;
+    using common::WiredTaskES;
+    using common::InvalidCoroutineHandleException;
+    using common::TaskResumeFailedException;
+    using common::OperationCancelledException;
+    using common::TaskReturnedNullReferenceException;
+    using common::TaskFinishedWithoutProducingValueException;
+}
 
 export namespace async_core::exec
 {
     template<typename T, typename Policy = LazyStartPolicy>
-    class Task : public TaskBase<Task<T, Policy>, BasicPromiseType<Task<T, Policy>, T, TaskType::Wired, Policy, ManualEndPolicy>>
+    class Task :
+        public TaskBase
+        <
+            WiredTaskES
+        >,
+        public TaskCancellable
+        <
+            Task<T, Policy>
+        >
     {
-        using PromiseT = BasicPromiseType<Task<T, Policy>, T, TaskType::Wired, Policy, ManualEndPolicy>;
-        using TaskBaseType = TaskBase<Task<T, Policy>, PromiseT>;
-
     public:
         using value_type = T;
-        using ReturnType = std::conditional_t<std::is_void_v<T>, std::monostate, T>;
+        /**
+         * This alias is used for some functions, which requires to hold some non-void type
+         */
+        using return_type = std::conditional_t<std::is_void_v<T>, std::monostate, T>;
 
+        /**
+         * promise_type definition for c++ compiler
+         */
         using promise_type = BasicPromiseType<
-            Task<T, Policy>,
-            T,
+            Task,
+            value_type,
             TaskType::Wired,
             Policy,
             ManualEndPolicy
         >;
 
-        using Base = TaskBase<Task<T, Policy>, promise_type>;
+        /**
+         * base task type
+         */
+        using Base = TaskBase;
+
+        /**
+         * alias for exposing the task_type(wired/detached)
+         */
+        using Base::task_type;
 
         explicit Task(SafeCoroutineHandle handle) : Base(std::move(handle)) {}
 
@@ -52,38 +83,34 @@ export namespace async_core::exec
         Task& operator=(const Task&) = delete;
 
         Task(Task&& other) noexcept
-            : TaskBaseType(std::move(other))
+            : Base(std::move(other))
         {
         }
 
         Task& operator=(Task&& other) noexcept
         {
             if (this != &other) {
-                TaskBaseType::operator=(std::move(other));
+                Base::operator=(std::move(other));
             }
             return *this;
         }
 
-        ~Task() {
-            this->destroy_frame();
-        }
-
-        T get()
+        value_type get()
         {
-            if (!this->safe_handle.is_valid()) {
-                throw std::runtime_error("Attempting to run an uninitialized task.");
+            if (!this->safe_handle.IsValid()) {
+                throw InvalidCoroutineHandleException{};
             }
 
-            auto h = this->safe_handle.template raw_handle<promise_type>();
+            auto h = this->safe_handle.template RawHandle<promise_type>();
 
             if (!h.done())
             {
                 std::binary_semaphore sem{0};
                 h.promise().m_semaphore = &sem;
 
-                if (!this->safe_handle.try_resume()) {
+                if (!this->safe_handle.TryResume()) {
                     h.promise().m_semaphore = nullptr;
-                    throw std::runtime_error("Failed to resume task in Task::get().");
+                    throw TaskResumeFailedException{};
                 }
 
                 sem.acquire();
@@ -93,91 +120,32 @@ export namespace async_core::exec
                 std::rethrow_exception(h.promise().m_exception);
             }
 
-            if (h.promise().is_cancelled()) {
-                throw std::runtime_error("Task was cancelled before completion.");
+            if (h.promise().IsCancelled()) {
+                throw OperationCancelledException{};
             }
 
             if constexpr (std::is_void_v<T>) {
                 return;
             } else if constexpr (std::is_reference_v<T>) {
                 if (!h.promise().value) {
-                    throw std::runtime_error("Task returned null reference.");
+                    throw TaskReturnedNullReferenceException{};
                 }
                 return *h.promise().value;
             } else {
                 if (!h.promise().value.has_value()) {
-                    throw std::runtime_error("Task finished without producing a value.");
+                    throw TaskFinishedWithoutProducingValueException{};
                 }
                 return std::move(*h.promise().value);
             }
-        }
-
-        [[nodiscard]] bool await_ready() const noexcept
-        {
-            return !this->safe_handle.is_valid() || this->safe_handle.template raw_handle<promise_type>().done();
-        }
-
-        template <typename PromiseT>
-        std::coroutine_handle<> await_suspend(std::coroutine_handle<PromiseT> caller) noexcept
-        {
-            auto h = this->safe_handle.template raw_handle<promise_type>();
-            h.promise().continuation = caller;
-
-            // passing a token
-            if constexpr (has_get_stop_token_v<promise_type>)
-            {
-                h.promise().m_parent_token = caller.promise().get_stop_token();
-            }
-
-            if constexpr (std::is_base_of_v<CoroutineNode, PromiseT>) {
-                caller.promise().add_child(&h.promise());
-            }
-
-            if (h.done()) {
-                return caller;
-            }
-
-            return h;
         }
 
         bool is_ready() const noexcept
         {
-            if (this->safe_handle.is_valid())
+            if (this->safe_handle.IsValid())
             {
-                this->safe_handle.template raw_handle<PromiseT>().done();
+                this->safe_handle.template RawHandle<promise_type>().done();
             }
             return false;
-        }
-
-        T await_resume()
-        {
-            if (!this->safe_handle.is_valid()) {
-                throw std::runtime_error("co_awaiting an invalid or moved-from Task");
-            }
-
-            auto h = this->safe_handle.template raw_handle<promise_type>();
-
-            if (h.promise().m_exception) {
-                std::rethrow_exception(h.promise().m_exception);
-            }
-
-            if (h.promise().is_cancelled()) {
-                throw std::runtime_error("Task was cancelled.");
-            }
-
-            if constexpr (std::is_void_v<T>) {
-                return;
-            } else if constexpr (std::is_reference_v<T>) {
-                if (!h.promise().value) {
-                    throw std::runtime_error("Task returned null reference.");
-                }
-                return *h.promise().value;
-            } else {
-                if (!h.promise().value.has_value()) {
-                    throw std::runtime_error("Task finished without producing a value.");
-                }
-                return std::move(*h.promise().value);
-            }
         }
     };
 

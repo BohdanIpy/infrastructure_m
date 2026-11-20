@@ -11,20 +11,26 @@ export module AsyncCoreLibrary:AsyncRead;
 import :IoTypes;
 import :IoLoop;
 import :SafeCoroutineHandle;
+import :Exceptions;
+import :Concepts;
 
-using async_core::common::HasSafeHandle;
+namespace async_core::io
+{
+    using common::HasSafeHandleConcept;
+    using common::AsyncFdReadFailedException;
+}
 
 export namespace async_core::io
 {
     class AsyncRead {
-        IoQueue* m_queue{nullptr};
+        std::reference_wrapper<IoQueue> m_queue;
         const SocketT m_fd{-1};
         IoCtx m_ctx{};
         std::span<std::byte> m_buffer;
         const std::uint64_t m_offset = static_cast<std::uint64_t>(-1);
     public:
         explicit AsyncRead(
-            IoQueue* queue,
+            IoQueue& queue,
             const SocketT fd,
             std::span<std::byte> buffer,
             const std::uint64_t offset = static_cast<std::uint64_t>(-1)
@@ -43,13 +49,13 @@ export namespace async_core::io
         }
 
         template <typename PromiseT>
-            requires HasSafeHandle<PromiseT>
+            requires HasSafeHandleConcept<PromiseT>
         void await_suspend(std::coroutine_handle<PromiseT> h) {
-            m_ctx.safe_coro = h.promise().get_safe_handle();
+            m_ctx.safe_coro = h.promise().GetSafeHandle();
 
             m_ctx.prepare_stream_read(m_buffer, m_offset);
 
-            m_queue->submit_read(m_fd, &m_ctx);
+            m_queue.get().submit_read(m_fd, &m_ctx);
         }
 
         [[nodiscard]]
@@ -59,11 +65,11 @@ export namespace async_core::io
             }
 
             if (m_ctx.result < 0) {
-                throw std::system_error(
+                throw AsyncFdReadFailedException{
                     -m_ctx.result,
                     std::generic_category(),
                     "Async fd read failed"
-                );
+                };
             }
             return static_cast<std::size_t>(m_ctx.result);
         }

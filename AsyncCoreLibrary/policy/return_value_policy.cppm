@@ -18,7 +18,11 @@ export namespace async_core::policy
 
     template <typename T>
     struct PromiseReturnBase {
-        std::optional<T> value;
+        using value_type  = T;
+        using stored_type = std::optional<T>;
+        using result_type = T;
+
+        stored_type value;
 
         template <typename U>
             requires std::convertible_to<U, T>
@@ -26,29 +30,37 @@ export namespace async_core::policy
             value.emplace(std::forward<U>(val));
         }
 
-        T result() {
+        result_type result() {
             return std::move(value.value());
         }
     };
 
     template <typename T>
     struct PromiseReturnBase<T&> {
-        T* value{nullptr};
+        using value_type  = T&;
+        using stored_type = T*;
+        using result_type = T&;
+
+        stored_type value{nullptr};
 
         void return_value(T& val) noexcept {
             value = std::addressof(val);
         }
 
-        T& result() const {
+        result_type result() const {
             return *value;
         }
     };
 
     template <>
     struct PromiseReturnBase<void> {
-        std::monostate value{};
+        using value_type  = void;
+        using stored_type = std::monostate;
+        using result_type = void;
+
+        stored_type value{};
 
         void return_void() noexcept {}
-        void result() const noexcept {}
+        result_type result() const noexcept {}
     };
 }

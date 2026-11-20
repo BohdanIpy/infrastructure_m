@@ -7,11 +7,9 @@ export module AsyncCoreLibrary:CoroutineStates;
 export namespace async_core::common
 {
     enum class CoroutineState : uint8_t {
-        Created,    // Allocated, but never resumed/started
-        Suspended,  // Suspended at an await point
-        Running,    // Actively executing
-        Cancelled,  // Cancelled by parent or user
-        Destroyed   // Destroyed or completed
+        Created,    // frame allocated, never started
+        Started,    // started at least once, frame still alive (running or parked: not distinguished)
+        Destroyed   // terminal, frame is gone
     };
 
     enum class AwaitableState : uint8_t {

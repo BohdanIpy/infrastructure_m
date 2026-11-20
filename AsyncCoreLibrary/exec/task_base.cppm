@@ -1,35 +1,38 @@
 module;
 
 #include <utility>
-#include <stop_token>
+#include <cassert>
 
 export module AsyncCoreLibrary:TaskBase;
 
 import :SafeCoroutineHandle;
+import :TaskTypes;
+import :CoroutineStates;
+import :Concepts;
 
-using async_core::common::SafeCoroutineHandle;
+namespace async_core::exec
+{
+    using common::SafeCoroutineHandle;
+    using common::IsWiredTaskEsConcept;
+    using common::CoroutineState;
+}
 
 export namespace async_core::exec
 {
-    template <typename Derived, typename PromiseType>
-    class TaskBase
-    {
+    template <typename TaskTypeT>
+    class TaskBase {
+    public:
+        using task_type = TaskTypeT;
+        static constexpr bool owns_frame = IsWiredTaskEsConcept<TaskTypeT>;
     protected:
         SafeCoroutineHandle safe_handle;
-
-        /**
-         * function required for safely destroy a coroutine frame ussing a coroutine_handle<>
-         */
         void destroy_frame() noexcept {
-            if (safe_handle.is_valid()) {
-                auto h = safe_handle.template raw_handle<PromiseType>();
-                safe_handle = SafeCoroutineHandle{};
-                if (h) {
-                    h.destroy();
-                }
+            if constexpr (owns_frame) {
+                assert((!safe_handle.IsValid() || safe_handle.LoadState() == CoroutineState::Created || safe_handle.IsDone())
+                       && "Task destroyed while its coroutine may still be resumed: RequestStop() and wait for completion first");
+                (void)safe_handle.Destroy();
             }
         }
-
     public:
         explicit TaskBase(SafeCoroutineHandle handle) : safe_handle(std::move(handle)) {}
 
@@ -47,43 +50,34 @@ export namespace async_core::exec
             return *this;
         }
 
-        ~TaskBase() = default;
+        ~TaskBase()
+        {
+            destroy_frame();
+        }
 
-        [[nodiscard]] SafeCoroutineHandle get_safe_handle() const noexcept {
+        [[nodiscard]] SafeCoroutineHandle GetSafeHandle() const noexcept {
             return safe_handle;
         }
 
-        void cancel() const noexcept {
-            if (safe_handle.is_valid()) {
-                safe_handle.template raw_handle<PromiseType>().promise().request_stop();
-            }
+        [[nodiscard]] bool IsValid() const noexcept {
+            return safe_handle.IsValid();
         }
 
-        void bind_stop_token(const std::stop_token& stop_token) noexcept
+        void TryResume() const
         {
-            if (safe_handle.is_valid())
+            if (safe_handle.IsValid())
             {
-                safe_handle.template raw_handle<PromiseType>().promise().add_parent_stop_token(stop_token);
+                (void)safe_handle.TryResume();
             }
         }
 
-        [[nodiscard]] bool is_cancelled() const noexcept {
-            if (safe_handle.is_valid()) {
-                return safe_handle.template raw_handle<PromiseType>().promise().is_cancelled();
+        bool TryStart() const
+        {
+            if (safe_handle.IsValid())
+            {
+                return safe_handle.TryStart();
             }
             return false;
-        }
-
-        [[nodiscard]] bool is_valid() const noexcept {
-            return safe_handle.is_valid();
-        }
-
-        void try_resume() const
-        {
-            if (safe_handle.is_valid())
-            {
-                (void)safe_handle.try_resume();
-            }
         }
     };
 }

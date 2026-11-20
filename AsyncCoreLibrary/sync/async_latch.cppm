@@ -13,7 +13,7 @@ export module AsyncCoreLibrary:AsyncLatch;
 import :SafeCoroutineHandle;
 
 using async_core::common::SafeCoroutineHandle;
-using async_core::common::HasSafeHandle;
+using async_core::common::HasSafeHandleConcept;
 
 export namespace async_core::sync
 {
@@ -53,10 +53,10 @@ export namespace async_core::sync
 
             for (auto& waiter : to_resume)
             {
-                if (waiter.is_valid())
+                if (waiter.IsValid())
                 {
                     // TODO insert some telemetry, or kind of
-                    (void)waiter.try_resume();
+                    (void)waiter.TryResume();
                 }
             }
         }
@@ -77,7 +77,7 @@ export namespace async_core::sync
         }
 
         template <typename PromiseT>
-            requires HasSafeHandle<PromiseT>
+            requires HasSafeHandleConcept<PromiseT>
         bool await_suspend(std::coroutine_handle<PromiseT> requesting_coroutine) noexcept
         {
             std::unique_lock lock(m_mtx);
@@ -86,7 +86,7 @@ export namespace async_core::sync
                 return false;
             }
 
-            m_waiters.push_back(requesting_coroutine.promise().get_safe_handle());
+            m_waiters.push_back(requesting_coroutine.promise().GetSafeHandle());
             return true;
         }
 

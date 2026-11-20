@@ -100,7 +100,7 @@ TEST(AsyncAutoResetEventTest, DeepNestedMidExecutionCancellation)
 
     auto root_task = RootGrandparent(event);
     root_task.bind_stop_token(stop_src.get_token());
-    root_task.try_resume();
+    root_task.TryResume();
 
     EXPECT_FALSE(root_task.is_ready());
 
@@ -114,7 +114,7 @@ TEST(AsyncAutoResetEventTest, DeepNestedMidExecutionCancellation)
     auto secondary_task = [&]() -> Task<void> {
         secondary_acquired = co_await event;
     }();
-    secondary_task.try_resume();
+    secondary_task.TryResume();
 
     event.set();
     EXPECT_TRUE(secondary_task.is_ready());

@@ -196,7 +196,7 @@ export namespace network_core::dns_resolution
             template <typename PromiseT>
                 requires HasSafeHandle<PromiseT>
             bool await_suspend(std::coroutine_handle<PromiseT> h) {
-                ctx->safeHandle = h.promise().get_safe_handle();
+                ctx->safeHandle = h.promise().GetSafeHandle();
                 ctx->scheduler = resolver.m_io_queue.GetScheduler();
 
                 ares_addrinfo_hints hints {};

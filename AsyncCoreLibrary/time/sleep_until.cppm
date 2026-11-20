@@ -12,29 +12,30 @@ import :SafeCoroutineHandle;
 import :CancellingRoutines;
 import :AwaitableCancellationBase;
 import :CoroutineStates;
+import :Concepts;
 
-using async_core::common::HasSafeHandle;
-using async_core::common::has_get_stop_token_v;
-using async_core::common::AwaitableCancellationBase;
-using async_core::common::AwaitableState;
-
-using namespace std::chrono;
+namespace async_core::time
+{
+    using common::HasSafeHandleConcept;
+    using common::HasGetStopTokenConcept;
+    using common::AwaitableCancellationBase;
+    using common::AwaitableState;
+    using namespace std::chrono;
+    using Clock = steady_clock;
+}
 
 export namespace async_core::time
 {
-    using Clock = steady_clock;
-
-    class SleepUntil : public AwaitableCancellationBase
+    class SleepUntil : public AwaitableCancellationBase<SleepUntil>
     {
-        TimerQueue* m_queue{nullptr};
+        std::reference_wrapper<TimerQueue> m_queue;
         const Clock::time_point m_deadline;
         UUID m_uuid{};
 
     public:
         SleepUntil(TimerQueue& queue, const Clock::time_point& deadline) noexcept
-            : m_queue(&queue), m_deadline(deadline)
+            : m_queue(queue), m_deadline(deadline)
         {
-            assert(m_queue != nullptr);
         }
 
         bool await_ready() const noexcept
@@ -43,13 +44,14 @@ export namespace async_core::time
         }
 
         template <typename PromiseT>
-            requires HasSafeHandle<PromiseT> && has_get_stop_token_v<PromiseT>
+            requires
+                HasSafeHandleConcept<PromiseT> and
+                HasGetStopTokenConcept<PromiseT>
         bool await_suspend(std::coroutine_handle<PromiseT> h)
         {
-            assert(m_queue != nullptr);
             auto& promise = h.promise();
 
-            std::stop_token token = promise.get_stop_token();
+            std::stop_token token = promise.GetStopToken();
 
             if (token.stop_requested()) {
                 m_state.store(AwaitableState::Cancelled, std::memory_order_relaxed);
@@ -58,7 +60,7 @@ export namespace async_core::time
 
             setup_promise_erasure(promise);
 
-            auto safe_handle = promise.get_safe_handle();
+            auto safe_handle = promise.GetSafeHandle();
 
             const auto now = Clock::now();
             const auto wait_time = (m_deadline > now)
@@ -81,7 +83,7 @@ export namespace async_core::time
 
                         if (self->try_mark_cancelled()) {
                             auto* prom = static_cast<PromiseT*>(self->m_promise_ptr);
-                            (void)prom->get_safe_handle().try_resume();
+                            (void)prom->GetSafeHandle().TryResume();
                         }
                     },
                     this

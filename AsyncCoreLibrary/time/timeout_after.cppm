@@ -22,39 +22,26 @@ import :SwitchTo;
 import :DetachedTask;
 import :SafeCoroutineHandle;
 import :Exceptions;
+import :Concepts;
 
 import CoreUtility;
 
-using async_core::coro_loop::ICoroScheduler;
-using async_core::coro_loop::SwitchTo;
-using async_core::exec::DetachedTask;
-using async_core::common::HasSafeHandle;
-using async_core::common::SafeCoroutineHandle;
-using async_core::common::OperationCancelledException;
-using async_core::common::TimeoutException;
-
-using core_utility::uuid::UUID;
+namespace async_core::time
+{
+    using coro_loop::ICoroScheduler;
+    using coro_loop::SwitchTo;
+    using exec::DetachedTask;
+    using common::HasSafeHandleConcept;
+    using common::SafeCoroutineHandle;
+    using common::OperationCancelledException;
+    using common::TimeoutException;
+    using common::HasGetStopTokenConcept;
+    using common::HasRequestStopConcept;
+    using core_utility::uuid::UUID;
+}
 
 export namespace async_core::time
 {
-    template <typename T, typename = void>
-    struct has_stop_token_support : std::false_type {};
-
-    template <typename T>
-    struct has_stop_token_support<T, std::void_t<decltype(std::declval<T&>().get_stop_token())>> : std::true_type {};
-
-    template <typename T>
-    inline constexpr bool has_stop_token_support_v = has_stop_token_support<T>::value;
-
-    template <typename T, typename = void>
-    struct has_request_stop : std::false_type {};
-
-    template <typename T>
-    struct has_request_stop<T, std::void_t<decltype(std::declval<T&>().request_stop())>> : std::true_type {};
-
-    template <typename T>
-    inline constexpr bool has_request_stop_v = has_request_stop<T>::value;
-
     enum class RaceResult { PENDING, TASK_WON, TIMED_OUT, CANCELLED };
 
     template <typename T>
@@ -178,7 +165,7 @@ export namespace async_core::time
                             state->state = RaceResult::TASK_WON;
                             to_resume = state->caller_handle;
                         }
-                        if (to_resume.is_valid()) to_resume.try_resume();
+                        if (to_resume.IsValid()) to_resume.TryResume();
                     }
                 } else {
                     auto res = co_await task;
@@ -200,7 +187,7 @@ export namespace async_core::time
                             state->state = RaceResult::TASK_WON;
                             to_resume = state->caller_handle;
                         }
-                        if (to_resume.is_valid()) to_resume.try_resume();
+                        if (to_resume.IsValid()) to_resume.TryResume();
                     }
                 }
             } catch (...) {
@@ -217,7 +204,7 @@ export namespace async_core::time
                         state->state = RaceResult::TASK_WON;
                         to_resume = state->caller_handle;
                     }
-                    if (to_resume.is_valid()) to_resume.try_resume();
+                    if (to_resume.IsValid()) to_resume.TryResume();
                 }
             }
         }
@@ -235,18 +222,18 @@ export namespace async_core::time
         bool await_ready() const noexcept { return false; }
 
         template <typename PromiseT>
-            requires HasSafeHandle<PromiseT>
+            requires HasSafeHandleConcept<PromiseT>
         void await_suspend(std::coroutine_handle<PromiseT> caller) {
             {
                 std::unique_lock lk{m_state->mtx};
-                m_state->caller_handle = caller.promise().get_safe_handle();
+                m_state->caller_handle = caller.promise().GetSafeHandle();
             }
 
-            m_innerSafeHandle = m_task.get_safe_handle();
+            m_innerSafeHandle = m_task.GetSafeHandle();
 
             // Check if caller promise provides a stop token
-            if constexpr (has_stop_token_support_v<PromiseT>) {
-                auto stop_token = caller.promise().get_stop_token();
+            if constexpr (HasGetStopTokenConcept<PromiseT>) {
+                auto stop_token = caller.promise().GetStopToken();
                 if (stop_token.stop_requested()) {
                     m_state->done.store(true, std::memory_order_relaxed);
                     m_state->cancelled.store(true, std::memory_order_relaxed);
@@ -255,15 +242,15 @@ export namespace async_core::time
                 }
             }
 
-            m_wrapperHandle = RunTaskWrapper(m_scheduler, m_task, m_state, m_queue).get_safe_handle();
+            m_wrapperHandle = RunTaskWrapper(m_scheduler, m_task, m_state, m_queue).GetSafeHandle();
 
             auto [status, uuid] = m_queue.AddTimer([weak_state = std::weak_ptr<SharedState>(m_state), task_safe = m_innerSafeHandle]() mutable {
                 if (auto state = weak_state.lock()) {
                     if (!state->done.exchange(true, std::memory_order_acq_rel)) {
                         state->cancelled.store(true, std::memory_order_relaxed);
 
-                        if constexpr (has_request_stop_v<SafeCoroutineHandle>) {
-                            task_safe.request_stop();
+                        if constexpr (HasRequestStopConcept<SafeCoroutineHandle>) {
+                            task_safe.RequestStop();
                         }
 
                         SafeCoroutineHandle to_resume{};
@@ -272,8 +259,8 @@ export namespace async_core::time
                             state->state = RaceResult::TIMED_OUT;
                             to_resume = state->caller_handle;
                         }
-                        if (to_resume.is_valid()) {
-                            (void)to_resume.try_resume();
+                        if (to_resume.IsValid()) {
+                            (void)to_resume.TryResume();
                         }
                     }
                 }
@@ -282,8 +269,8 @@ export namespace async_core::time
             if (status != TimerStatus::Success) [[unlikely]]
             {
                 m_state->done.store(true, std::memory_order_relaxed);
-                if constexpr (has_request_stop_v<SafeCoroutineHandle>) {
-                    m_innerSafeHandle.request_stop();
+                if constexpr (HasRequestStopConcept<SafeCoroutineHandle>) {
+                    m_innerSafeHandle.RequestStop();
                 }
                 {
                     std::unique_lock lk{m_state->mtx};
@@ -306,10 +293,10 @@ export namespace async_core::time
 
                 m_queue.CancelTimer(m_state->timer_id);
 
-                if constexpr (has_request_stop_v<TaskType>) {
-                    m_task.request_stop();
-                } else if constexpr (has_request_stop_v<SafeCoroutineHandle>) {
-                    m_innerSafeHandle.request_stop();
+                if constexpr (HasRequestStopConcept<TaskType>) {
+                    m_task.RequestStop();
+                } else if constexpr (HasRequestStopConcept<SafeCoroutineHandle>) {
+                    m_innerSafeHandle.RequestStop();
                 }
 
                 SafeCoroutineHandle to_resume{};
@@ -318,8 +305,8 @@ export namespace async_core::time
                     m_state->state = RaceResult::CANCELLED;
                     to_resume = m_state->caller_handle;
                 }
-                if (to_resume.is_valid()) {
-                    to_resume.try_resume();
+                if (to_resume.IsValid()) {
+                    to_resume.TryResume();
                 }
             }
         }
@@ -328,8 +315,8 @@ export namespace async_core::time
             try {
                 return m_state->get_value();
             } catch (...) {
-                (void)m_innerSafeHandle.try_destroy_unstarted();
-                (void)m_wrapperHandle.try_destroy_unstarted();
+                (void)m_innerSafeHandle.TryDestroyUnstarted();
+                (void)m_wrapperHandle.TryDestroyUnstarted();
                 throw;
             }
         }

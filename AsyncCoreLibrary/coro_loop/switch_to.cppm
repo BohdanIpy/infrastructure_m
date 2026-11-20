@@ -1,9 +1,12 @@
 module;
 
-#include <coroutine>
-#include <optional>
 #include <cassert>
+#include <coroutine>
+#include <cstdint>
+#include <functional>
+#include <optional>
 #include <stdexcept>
+#include <utility>
 
 export module AsyncCoreLibrary:SwitchTo;
 
@@ -11,38 +14,53 @@ import :ICoroScheduler;
 import :SafeCoroutineHandle;
 import :ScheduleTypes;
 import :Exceptions;
+import :Concepts;
 
-using async_core::common::HasSafeHandle;
-using async_core::common::InvalidHandleException;
-using async_core::common::SchedulerMemoryException;
+namespace async_core::coro_loop
+{
+    using common::HasSafeHandleConcept;
+    using common::InvalidHandleException;
+    using common::ScheduleStatus;
+    using common::SchedulerMemoryException;
+}
 
 export namespace async_core::coro_loop
 {
+    /**
+     * Awaiter which moves the awaiting coroutine onto a scheduler worker.
+     *
+     * Success: the coroutine continues on the worker thread, await_resume() returns Success.
+     * Failure: await_suspend() returns false, so the coroutine continues INLINE on the CURRENT thread and
+     *          await_resume() reports why (SchedulerStopped is returned, the others throw). The handle handed to the
+     *          scheduler was only a non-owning copy, so nothing leaks and nothing is destroyed on this path.
+     *
+     * Do not ignore the result if the code after the switch relies on running on the target thread.
+     */
     struct SwitchTo
     {
-        ICoroScheduler& m_scheduler;
-        std::optional<std::size_t> m_index;
+        std::reference_wrapper<ICoroScheduler> m_scheduler;
+        std::optional<std::uint64_t> m_index;
         ScheduleStatus m_status{ScheduleStatus::Success};
 
-        explicit SwitchTo(ICoroScheduler& scheduler, const std::optional<std::size_t> index = std::nullopt) noexcept
+        explicit SwitchTo(ICoroScheduler& scheduler, const std::optional<std::uint64_t> index = std::nullopt) noexcept
             : m_scheduler(scheduler), m_index(index) {}
 
         [[nodiscard]] constexpr bool await_ready() const noexcept { return false; }
 
         template <typename PromiseT>
-            requires HasSafeHandle<PromiseT>
-        bool await_suspend(std::coroutine_handle<PromiseT> coroutine) noexcept
+            requires HasSafeHandleConcept<PromiseT>
+        bool await_suspend(std::coroutine_handle<PromiseT> caller) noexcept
         {
-            auto safeHandle = coroutine.promise().get_safe_handle();
+            auto safeHandle = caller.promise().GetSafeHandle();
 
-            m_status = m_index.has_value()
-                ? m_scheduler.scheduleOnPosition(std::move(safeHandle), *m_index)
-                : m_scheduler.schedule(std::move(safeHandle));
+            const ScheduleStatus status = m_index.has_value()
+                ? m_scheduler.get().scheduleOnPosition(std::move(safeHandle), *m_index)
+                : m_scheduler.get().schedule(std::move(safeHandle));
 
-            if (m_status != ScheduleStatus::Success) {
+            if (status != ScheduleStatus::Success) {
+                m_status = status;
                 return false;
             }
-
             return true;
         }
 
@@ -71,7 +89,7 @@ export namespace async_core::coro_loop
         return SwitchTo(scheduler);
     }
 
-    [[nodiscard]] inline SwitchTo switch_to(ICoroScheduler& scheduler, std::size_t thread_idx) noexcept {
+    [[nodiscard]] inline SwitchTo switch_to(ICoroScheduler& scheduler, std::uint64_t thread_idx) noexcept {
         return SwitchTo(scheduler, thread_idx);
     }
 
@@ -80,7 +98,7 @@ export namespace async_core::coro_loop
         return SwitchTo(*scheduler);
     }
 
-    [[nodiscard]] inline SwitchTo switch_to(ICoroScheduler* scheduler, std::size_t thread_idx) noexcept {
+    [[nodiscard]] inline SwitchTo switch_to(ICoroScheduler* scheduler, std::uint64_t thread_idx) noexcept {
         assert(scheduler != nullptr);
         return SwitchTo(*scheduler, thread_idx);
     }

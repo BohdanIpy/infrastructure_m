@@ -10,8 +10,9 @@ export module AsyncCoreLibrary:AsyncWriteSocket;
 import :IoTypes;
 import :IoLoop;
 import :SafeCoroutineHandle;
+import :Concepts;
 
-using async_core::common::HasSafeHandle;
+using async_core::common::HasSafeHandleConcept;
 
 export namespace async_core::io
 {
@@ -44,9 +45,9 @@ export namespace async_core::io
         }
 
         template <typename PromiseT>
-            requires HasSafeHandle<PromiseT>
+            requires HasSafeHandleConcept<PromiseT>
         void await_suspend(std::coroutine_handle<PromiseT> h) {
-            m_ctx.safe_coro = h.promise().get_safe_handle();
+            m_ctx.safe_coro = h.promise().GetSafeHandle();
 
             m_ctx.prepare_stream_write(m_buffer);
 

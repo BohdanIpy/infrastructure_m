@@ -12,7 +12,7 @@ using async_core::common::TaskType;
 export namespace async_core::policy
 {
     // ==========================================
-    // 2. Execution & Continuation Policies
+    // Execution & Continuation Policies
     // ==========================================
 
     template <TaskType Type>

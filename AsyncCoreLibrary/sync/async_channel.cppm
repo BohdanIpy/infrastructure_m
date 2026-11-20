@@ -15,10 +15,11 @@ export module AsyncCoreLibrary:AsyncChannel;
 
 import :ICoroScheduler;
 import :SafeCoroutineHandle;
+import :Concepts;
 
 using async_core::coro_loop::ICoroScheduler;
 using async_core::common::SafeCoroutineHandle;
-using async_core::common::HasSafeHandle;
+using async_core::common::HasSafeHandleConcept;
 
 export namespace async_core::sync
 {
@@ -248,7 +249,7 @@ export namespace async_core::sync
             channel->debug_sends_succeeded.fetch_add(1, std::memory_order_relaxed);
             channel->debug_receives_succeeded.fetch_add(1, std::memory_order_relaxed);
 #endif
-            if (reader.handle->is_valid()) {
+            if (reader.handle->IsValid()) {
                 handle_to_wake = std::move(reader.handle);
             }
             return true;
@@ -267,7 +268,7 @@ export namespace async_core::sync
     }
 
     template <typename PromiseT>
-        requires HasSafeHandle<PromiseT>
+        requires HasSafeHandleConcept<PromiseT>
     bool await_suspend(std::coroutine_handle<PromiseT> h) noexcept {
         std::unique_lock lock(channel->m_mtx);
 
@@ -283,7 +284,7 @@ export namespace async_core::sync
         channel->debug_writers_pushed.fetch_add(1, std::memory_order_relaxed);
 #endif
         channel->m_writers.push(WriterNode{
-            h.promise().get_safe_handle(),
+            h.promise().GetSafeHandle(),
             std::move(value),
             sent_successfully
         });
@@ -338,7 +339,7 @@ struct ReceiveAwaiter {
                 channel->debug_sends_succeeded.fetch_add(1, std::memory_order_relaxed);
                 channel->debug_writers_drained_by_receive.fetch_add(1, std::memory_order_relaxed);
 #endif
-                if (writer.handle->is_valid()) {
+                if (writer.handle->IsValid()) {
                     handle_to_wake = std::move(writer.handle);
                 }
             }
@@ -356,7 +357,7 @@ struct ReceiveAwaiter {
             channel->debug_receives_succeeded.fetch_add(1, std::memory_order_relaxed);
             channel->debug_writers_drained_by_receive.fetch_add(1, std::memory_order_relaxed);
 #endif
-            if (writer.handle->is_valid()) {
+            if (writer.handle->IsValid()) {
                 handle_to_wake = std::move(writer.handle);
             }
             return true;
@@ -371,7 +372,7 @@ struct ReceiveAwaiter {
     }
 
     template <typename PromiseT>
-        requires HasSafeHandle<PromiseT>
+        requires HasSafeHandleConcept<PromiseT>
     bool await_suspend(std::coroutine_handle<PromiseT> h) noexcept {
         std::unique_lock lock(channel->m_mtx);
 
@@ -382,9 +383,9 @@ struct ReceiveAwaiter {
             }
             return false; // don't suspend, we completed synchronously
         }
-        assert(h.promise().get_safe_handle() != nullptr);
+        assert(h.promise().GetSafeHandle() != nullptr);
         channel->m_readers.push(ReaderNode{
-            h.promise().get_safe_handle(),
+            h.promise().GetSafeHandle(),
             result_slot
         });
         return true;
@@ -438,7 +439,7 @@ struct ReceiveAwaiter {
 #ifndef NDEBUG
                     debug_sends_succeeded.fetch_add(1, std::memory_order_relaxed);
 #endif
-                    if (writer.handle->is_valid()) {
+                    if (writer.handle->IsValid()) {
                         m_scheduler.schedule(std::move(writer.handle));
                     }
                 }
@@ -451,7 +452,7 @@ struct ReceiveAwaiter {
                 auto node = std::move(readers_to_wake.front());
                 readers_to_wake.pop();
                 if (node.value_slot) *node.value_slot = std::nullopt;
-                if (node.handle->is_valid()) {
+                if (node.handle->IsValid()) {
                     m_scheduler.schedule(std::move(node.handle));
                 }
             }
@@ -464,7 +465,7 @@ struct ReceiveAwaiter {
                 debug_writers_failed_by_close.fetch_add(1, std::memory_order_relaxed);
                 debug_sends_failed.fetch_add(1, std::memory_order_relaxed);
 #endif
-                if (node.handle->is_valid()) {
+                if (node.handle->IsValid()) {
                     m_scheduler.schedule(std::move(node.handle));
                 }
             }

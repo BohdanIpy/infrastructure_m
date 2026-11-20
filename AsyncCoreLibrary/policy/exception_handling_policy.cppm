@@ -1,6 +1,7 @@
 module;
 
 #include <exception>
+#include <iostream>
 
 export module AsyncCoreLibrary:ExceptionHandlingPolicy;
 
@@ -11,14 +12,15 @@ using async_core::common::TaskType;
 export namespace async_core::policy
 {
     // ==========================================
-    // 1. Exception Handling Policies
+    // Exception Handling Policies
     // ==========================================
 
-    template <TaskType Type>
+    template <TaskType Type, typename Stream = std::ostream&>
     struct ExceptionPolicy;
 
-    template <>
-    struct ExceptionPolicy<TaskType::Wired>
+    // Wired Task: Stores exception_ptr to be rethrown later by the parent/awaiter
+    template <typename Stream>
+    struct ExceptionPolicy<TaskType::Wired, Stream>
     {
         std::exception_ptr m_exception{nullptr};
 
@@ -33,17 +35,17 @@ export namespace async_core::policy
         }
     };
 
-    template <>
-    struct ExceptionPolicy<TaskType::Detached>
+    // Detached Task: Catches and logs the exception immediately using a provided stream
+    template <typename Stream>
+    struct ExceptionPolicy<TaskType::Detached, Stream>
     {
-        template <typename Stream>
-        void handle_exception(Stream& os) noexcept {
+        void unhandled_exception() noexcept {
             try {
                 std::rethrow_exception(std::current_exception());
             } catch (const std::exception& e) {
-                os << "[DetachedTask Exception]: " << e.what() << '\n';
+                std::cerr << "[DetachedTask Exception]: " << e.what() << '\n';
             } catch (...) {
-                os << "[DetachedTask Exception]: Unknown exception\n";
+                std::cerr << "[DetachedTask Exception]: Unknown exception\n";
             }
         }
     };

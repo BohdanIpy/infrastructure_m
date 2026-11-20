@@ -17,6 +17,7 @@ target_sources(AsyncCoreLibrary
             common/safe_coroutine_handle.cppm
             common/cancelling_routines.cppm
             common/awaitable_cancellation_base.cppm
+            common/concepts.cppm
 
             # policies for building a promise_type for a coroutine
             policy/continuation_policy.cppm
@@ -24,11 +25,18 @@ target_sources(AsyncCoreLibrary
             policy/return_value_policy.cppm
             policy/start_end_policy.cppm
 
-            exec/detached_task.cppm
-            exec/generator.cppm
-            exec/task.cppm
+
             exec/basic_promise_type.cppm
+            exec/generator.cppm
+
             exec/task_base.cppm
+
+            exec/detached_task.cppm
+
+            exec/task.cppm
+            exec/task_awaitable.cppm
+            exec/task_cancellable.cppm
+
 
             context/switch_to_thread.cppm
 
@@ -36,6 +44,7 @@ target_sources(AsyncCoreLibrary
             coro_loop/coro_scheduler.cppm
             coro_loop/switch_to.cppm
             coro_loop/coro_thread.cppm
+            coro_loop/bulk_schedule_result.cppm
 
             io/io_loop.cppm
             io/io_types.cppm

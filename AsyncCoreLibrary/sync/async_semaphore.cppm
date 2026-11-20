@@ -14,11 +14,12 @@ export module AsyncCoreLibrary:AsyncSemaphore;
 import :ICoroScheduler;
 import :SafeCoroutineHandle;
 import :ScheduleTypes;
+import :Concepts;
 
 using async_core::coro_loop::ICoroScheduler;
 using async_core::common::ScheduleStatus;
 using async_core::common::SafeCoroutineHandle;
-using async_core::common::HasSafeHandle;
+using async_core::common::HasSafeHandleConcept;
 
 export namespace async_core::sync
 {
@@ -55,7 +56,7 @@ export namespace async_core::sync
             }
 
             template <typename Promise>
-                requires HasSafeHandle<Promise>
+                requires HasSafeHandleConcept<Promise>
             bool await_suspend(std::coroutine_handle<Promise> h) noexcept {
                 std::unique_lock lock(m_sem.m_waiters_mtx);
 
@@ -64,7 +65,7 @@ export namespace async_core::sync
                     return false;
                 }
 
-                m_sem.m_waiters.push(h.promise().get_safe_handle());
+                m_sem.m_waiters.push(h.promise().GetSafeHandle());
                 return true;
             }
 
@@ -91,12 +92,12 @@ export namespace async_core::sync
                         handle_to_resume = std::move(m_waiters.front());
                         m_waiters.pop();
 
-                        if (handle_to_resume.is_valid()) {
+                        if (handle_to_resume.IsValid()) {
                             break;
                         }
                     }
 
-                    if (!handle_to_resume.is_valid()) {
+                    if (!handle_to_resume.IsValid()) {
                         m_count += update;
                         return;
                     }

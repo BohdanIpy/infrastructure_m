@@ -10,6 +10,7 @@ export import :ScheduleTypes;
 export import :TaskTypes;
 export import :SafeCoroutineHandle;
 export import :AwaitableCancellationBase;
+export import :Concepts;
 
 // policy
 export import :ContinuationPolicy;
@@ -22,7 +23,9 @@ export import :TaskBase;
 export import :Task;
 export import :DetachedTask;
 export import :Generator;
+export import :TaskAwaitable;
 export import :BasicPromiseType;
+export import :TaskCancellable
 
 // context
 export import :SwitchToThread;
@@ -33,6 +36,7 @@ export import :CoroScheduler;
 export import :SwitchTo;
 export import :CoroThread;
 export import :ScheduleTypes;
+export import :BulkScheduleResult;
 
 // io
 export import :IoTypes;

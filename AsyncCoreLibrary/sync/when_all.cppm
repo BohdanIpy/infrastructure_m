@@ -78,7 +78,7 @@ namespace details
                                 latch,
                                 results
                             );
-                            (void)scheduler.schedule(launcher.get_safe_handle());
+                            (void)scheduler.schedule(launcher.GetSafeHandle());
                         }(),
                         ...
                     );
@@ -101,9 +101,9 @@ namespace details
             void await_suspend(std::coroutine_handle<> handle)
             {
                 m_awaitableTask = std::make_unique<Task<ReturnType>>(launchAll(m_scheduler, std::move(m_tasks)));
-                m_awaitableTask->get_safe_handle().template raw_handle<typename Task<ReturnType>::promise_type>().promise().continuation = handle;
+                m_awaitableTask->GetSafeHandle().template RawHandle<typename Task<ReturnType>::promise_type>().promise().continuation = handle;
 
-                (void)m_scheduler.schedule(m_awaitableTask->get_safe_handle());
+                (void)m_scheduler.schedule(m_awaitableTask->GetSafeHandle());
             }
 
             ReturnType await_resume()

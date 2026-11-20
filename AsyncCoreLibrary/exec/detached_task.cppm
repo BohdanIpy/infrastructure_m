@@ -1,6 +1,5 @@
 module;
 
-#include <iostream>
 #include <memory>
 #include <utility>
 
@@ -10,18 +9,23 @@ import :SafeCoroutineHandle;
 import :BasicPromiseType;
 import :StartEndPolicy;
 import :TaskBase;
+import :TaskTypes;
 
-using async_core::common::SafeCoroutineHandle;
-using async_core::policy::EagerStartPolicy;
-using async_core::policy::AutoDestroyEndPolicy;
+namespace async_core::exec
+{
+    using common::SafeCoroutineHandle;
+    using policy::EagerStartPolicy;
+    using policy::AutoDestroyEndPolicy;
+    using common::DetachedTaskES;
+}
 
 export namespace async_core::exec
 {
-    template <typename StreamType = std::ostream&>
-    class BasicDetachedTask : public TaskBase<
-        BasicDetachedTask<StreamType>,
-        BasicPromiseType<BasicDetachedTask<StreamType>, void, TaskType::Detached, EagerStartPolicy, AutoDestroyEndPolicy>
-    >
+    class BasicDetachedTask : public
+        TaskBase
+        <
+            DetachedTaskES
+        >
     {
     public:
         using promise_type = BasicPromiseType<
@@ -32,13 +36,15 @@ export namespace async_core::exec
             AutoDestroyEndPolicy
         >;
 
-        using Base = TaskBase<BasicDetachedTask, promise_type>;
+        using Base = TaskBase;
 
         explicit BasicDetachedTask(SafeCoroutineHandle handle)
-            : Base(std::move(handle)) {}
+            : Base(std::move(handle))
+        {
+        }
 
         ~BasicDetachedTask() = default;
     };
 
-    using DetachedTask = BasicDetachedTask<>;
+    using DetachedTask = BasicDetachedTask;
 }

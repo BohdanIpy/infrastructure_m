@@ -15,7 +15,10 @@ export module AsyncCoreLibrary:IoTypes;
 
 import :SafeCoroutineHandle;
 
-using async_core::common::SafeCoroutineHandle;
+namespace async_core::io
+{
+    using common::SafeCoroutineHandle;
+}
 
 export namespace async_core::io
 {

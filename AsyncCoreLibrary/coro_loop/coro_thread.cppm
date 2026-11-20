@@ -6,14 +6,18 @@ module;
 #include <mutex>
 #include <utility>
 #include <functional>
+#include <new>
 
 export module AsyncCoreLibrary:CoroThread;
 
 import :SafeCoroutineHandle;
 import :ScheduleTypes;
 
-using async_core::common::SafeCoroutineHandle;
-using async_core::common::ScheduleStatus;
+namespace async_core::coro_loop
+{
+    using common::SafeCoroutineHandle;
+    using common::ScheduleStatus;
+}
 
 export namespace async_core::coro_loop
 {
@@ -39,7 +43,7 @@ export namespace async_core::coro_loop
 
         [[nodiscard]]
         ScheduleStatus push(SafeCoroutineHandle handle) {
-            if (!handle.is_valid())
+            if (!handle.IsValid())
                 return ScheduleStatus::InvalidHandle;
 
             {
@@ -57,21 +61,6 @@ export namespace async_core::coro_loop
 
             m_cv.notify_one();
             return ScheduleStatus::Success;
-        }
-
-        SafeCoroutineHandle pop_for_worker() {
-            std::unique_lock lock(m_mtx);
-
-            m_cv.wait(lock, [this] {
-                return !m_tasks.empty() || m_stopped;
-            });
-
-            if (!m_tasks.empty()) {
-                auto handle = std::move(m_tasks.front());
-                m_tasks.pop();
-                return handle;
-            }
-            return {};
         }
 
         void request_stop() {

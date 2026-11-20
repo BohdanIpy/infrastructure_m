@@ -10,19 +10,23 @@ export module AsyncCoreLibrary:AsyncAccept;
 import :IoTypes;
 import :IoLoop;
 import :SafeCoroutineHandle;
+import :Concepts;
 
-using async_core::common::HasSafeHandle;
+namespace async_core::io
+{
+    using common::HasSafeHandleConcept;
+}
 
 export namespace async_core::io
 {
     class AsyncAccept {
-        IoQueue* m_queue{nullptr};
+        std::reference_wrapper<IoQueue> m_queue;
         const SocketT m_listenFd{-1};
         const int m_flags{SOCK_CLOEXEC | SOCK_NONBLOCK};
         IoCtx m_ctx{};
 
     public:
-        explicit AsyncAccept(IoQueue* queue, SocketT listenFd, int flags = SOCK_CLOEXEC | SOCK_NONBLOCK) noexcept
+        explicit AsyncAccept(IoQueue& queue, SocketT listenFd, int flags = SOCK_CLOEXEC | SOCK_NONBLOCK) noexcept
             : m_queue(queue), m_listenFd(listenFd), m_flags(flags)
         {}
 
@@ -35,13 +39,13 @@ export namespace async_core::io
         bool await_ready() const noexcept { return false; }
 
         template <typename PromiseT>
-            requires HasSafeHandle<PromiseT>
+            requires HasSafeHandleConcept<PromiseT>
         void await_suspend(std::coroutine_handle<PromiseT> h) {
-            m_ctx.safe_coro = h.promise().get_safe_handle();
+            m_ctx.safe_coro = h.promise().GetSafeHandle();
 
             m_ctx.prepare_accept();
 
-            m_queue->submit_accept(
+            m_queue.get().submit_accept(
                 m_listenFd,
                 &m_ctx,
                 m_flags

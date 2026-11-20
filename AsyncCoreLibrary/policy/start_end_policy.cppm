@@ -9,11 +9,15 @@ import :CoroutineStates;
 import :ContinuationPolicy;
 import :SafeCoroutineHandle;
 import :CancellingRoutines;
+import :Concepts;
 
-using async_core::common::TaskType;
-using async_core::common::CoroutineState;
-using async_core::common::HasSafeHandle;
-using async_core::common::CoroutineNode;
+namespace async_core::policy
+{
+    using common::TaskType;
+    using common::CoroutineState;
+    using common::HasSafeHandleConcept;
+    using common::CancellationNode;
+}
 
 export namespace async_core::policy
 {
@@ -65,12 +69,12 @@ export namespace async_core::policy
          * Child coroutine finished, removed itself from parent, and pass the execution to the parent coroutine
          */
         template <typename Promise>
-            requires HasSafeHandle<Promise>
+            requires HasSafeHandleConcept<Promise>
         std::coroutine_handle<> await_suspend(std::coroutine_handle<Promise> h /* = child handle*/) noexcept {
             auto& promise = h.promise();
 
-            if constexpr (std::is_base_of_v<CoroutineNode, Promise>) {
-                promise.remove_from_parent();
+            if constexpr (std::is_base_of_v<CancellationNode, Promise>) {
+                promise.RemoveFromParent();
             }
 
             if constexpr (std::is_base_of_v<ContinuationPolicy<TaskType::Wired>, Promise>) {
