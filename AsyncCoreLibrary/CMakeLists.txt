@@ -18,6 +18,7 @@ target_sources(AsyncCoreLibrary
             common/cancelling_routines.cppm
             common/awaitable_cancellation_base.cppm
             common/concepts.cppm
+            common/wait_state.cppm
 
             # policies for building a promise_type for a coroutine
             policy/continuation_policy.cppm
@@ -45,9 +46,12 @@ target_sources(AsyncCoreLibrary
             coro_loop/switch_to.cppm
             coro_loop/coro_thread.cppm
             coro_loop/bulk_schedule_result.cppm
+            coro_loop/cancel_wait.cppm
+            coro_loop/wake.cppm
 
             io/io_loop.cppm
             io/io_types.cppm
+            io/io_operation.cppm
 
             io/async_methods/async_accept.cppm
             io/async_methods/async_close.cppm
@@ -61,9 +65,8 @@ target_sources(AsyncCoreLibrary
             io/async_methods/async_read_socket_from.cppm
             io/async_methods/async_write_socket_to.cppm
 
-            sync/async_auto_reset_event.cppm
             sync/async_channel.cppm
-            sync/async_manual_reset_event.cppm
+            sync/async_event.cppm
             sync/async_mutex.cppm
             sync/async_semaphore.cppm
             sync/sync_wait.cppm
@@ -71,6 +74,7 @@ target_sources(AsyncCoreLibrary
             sync/async_latch.cppm
 
             time/timer_queue.cppm
+            time/sleep_awaiter.cppm
             time/sleep_for.cppm
             time/sleep_until.cppm
             time/timeout_after.cppm

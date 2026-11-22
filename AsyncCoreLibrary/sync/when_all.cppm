@@ -1,120 +1,109 @@
 module;
 
-#include <type_traits>
-#include <coroutine>
-#include <mutex>
-#include <atomic>
+#include <cstddef>
 #include <exception>
+#include <mutex>
+#include <optional>
+#include <tuple>
+#include <type_traits>
 #include <memory>
 #include <utility>
-#include <tuple>
 #include <variant>
-
 
 export module AsyncCoreLibrary:WhenAll;
 
 import :SafeCoroutineHandle;
 import :ICoroScheduler;
-import :SyncWait;
+import :CancellingRoutines;     // shield
+import :ScheduleTypes;
 import :Task;
-import :AsyncLatch;
 import :DetachedTask;
+import :AsyncLatch;
 
-using async_core::common::SafeCoroutineHandle;
-using async_core::coro_loop::ICoroScheduler;
-using async_core::sync::sync_wait;
-using async_core::sync::AsyncLatch;
-using async_core::exec::Task;
-using async_core::exec::DetachedTask;
+namespace async_core::sync::detail
+{
+    using async_core::common::shield;
+    using async_core::coro_loop::ICoroScheduler;
+    using async_core::exec::DetachedTask;
+    using async_core::exec::Task;
 
+    template <typename TaskT>
+    using when_all_result_t = std::conditional_t<
+        std::is_void_v<typename std::remove_cvref_t<TaskT>::value_type>,
+        std::monostate,
+        typename std::remove_cvref_t<TaskT>::value_type>;
+
+    template <typename... Ts>
+    struct WhenAllState
+    {
+        AsyncLatch latch;
+        std::tuple<std::optional<when_all_result_t<Ts>>...> results;
+        std::mutex error_mtx;
+        std::exception_ptr first_error;
+
+        WhenAllState(std::ptrdiff_t count, ICoroScheduler* scheduler) : latch(count, scheduler) {}
+
+        void fail(std::exception_ptr error) noexcept
+        {
+            std::lock_guard lock(error_mtx);
+            if (!first_error) {
+                first_error = std::move(error);
+            }
+        }
+    };
+
+    /// Runs ONE child. Never throws: a failure is recorded, and the latch is ALWAYS counted down (the old code skipped it
+    /// when a child threw, so the whole when_all hung forever).
+    template <std::size_t I, typename StateT, typename TaskT>
+    DetachedTask run_one(StateT& state, TaskT task)
+    {
+        try {
+            if constexpr (std::is_void_v<typename TaskT::value_type>) {
+                co_await std::move(task);
+                std::get<I>(state.results).emplace();
+            } else {
+                std::get<I>(state.results).emplace(co_await std::move(task));
+            }
+        } catch (...) {
+            state.fail(std::current_exception());
+        }
+        state.latch.count_down();       // last use of `state` by this runner
+    }
+}
 
 export namespace async_core::sync
 {
-namespace details
-    {
-        template <typename... TaskTypes>
-        class WhenAllAwaitable
-        {
-        public:
-            using ReturnType = std::tuple<typename std::decay_t<TaskTypes>::ReturnType...>;
-
-        private:
-            ICoroScheduler& m_scheduler;
-            std::tuple<std::decay_t<TaskTypes>...> m_tasks;
-            std::unique_ptr<Task<ReturnType>> m_awaitableTask{nullptr};
-
-            template <std::size_t I, typename TaskType, typename ResultsPtr>
-            static DetachedTask run_one_task(
-                ICoroScheduler& sched,
-                TaskType task,
-                std::shared_ptr<AsyncLatch> latch_ptr,
-                ResultsPtr results_ptr)
-            {
-                using ResType = typename TaskType::ReturnType;
-
-                if constexpr (std::is_void_v<ResType> || std::is_same_v<ResType, std::monostate>) {
-                    co_await task;
-                    std::get<I>(*results_ptr) = std::monostate{};
-                } else {
-                    std::get<I>(*results_ptr) = co_await task;
-                }
-
-                latch_ptr->count_down();
-            }
-
-            static auto launchAll(ICoroScheduler& scheduler, std::tuple<std::decay_t<TaskTypes>...> tasks) -> Task<ReturnType>
-            {
-                constexpr auto N = sizeof...(TaskTypes);
-
-                auto latch = std::make_shared<AsyncLatch>(N);
-                auto results = std::make_shared<ReturnType>();
-
-                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    (
-                        [&scheduler, &tasks, &latch, &results]() {
-                            auto launcher = run_one_task<Is>(
-                                scheduler,
-                                std::move(std::get<Is>(tasks)),
-                                latch,
-                                results
-                            );
-                            (void)scheduler.schedule(launcher.GetSafeHandle());
-                        }(),
-                        ...
-                    );
-                }(std::make_index_sequence<N>{});
-
-                co_await *latch;
-                co_return std::move(*results);
-            }
-
-        public:
-            WhenAllAwaitable(ICoroScheduler& scheduler, TaskTypes&&... awaitables)
-                : m_scheduler{scheduler}, m_tasks(std::forward<TaskTypes>(awaitables)...)
-            {}
-
-            bool await_ready() const noexcept
-            {
-                return false;
-            }
-
-            void await_suspend(std::coroutine_handle<> handle)
-            {
-                m_awaitableTask = std::make_unique<Task<ReturnType>>(launchAll(m_scheduler, std::move(m_tasks)));
-                m_awaitableTask->GetSafeHandle().template RawHandle<typename Task<ReturnType>::promise_type>().promise().continuation = handle;
-
-                (void)m_scheduler.schedule(m_awaitableTask->GetSafeHandle());
-            }
-
-            ReturnType await_resume()
-            {
-                return m_awaitableTask->get();
-            }
-        };
-    }
-
     template <typename... Tasks>
-    [[nodiscard]] auto when_all_on(ICoroScheduler& scheduler, Tasks&&... awaitables) {
-        return details::WhenAllAwaitable<Tasks...>{scheduler, std::forward<Tasks>(awaitables)...};
+        requires (sizeof...(Tasks) > 0)
+    [[nodiscard]] async_core::exec::Task<std::tuple<detail::when_all_result_t<Tasks>...>>
+    when_all_on(async_core::coro_loop::ICoroScheduler& scheduler, Tasks... tasks)
+    {
+        constexpr std::size_t N = sizeof...(Tasks);
+        detail::WhenAllState<Tasks...> state{static_cast<std::ptrdiff_t>(N), &scheduler};
+
+        [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+            ([&] {
+                try {
+                    auto runner = detail::run_one<Is>(state, std::move(std::get<Is>(std::tie(tasks...))));
+                    auto handle = runner.GetSafeHandle();
+                    if (scheduler.Schedule(handle) != async_core::common::ScheduleStatus::Success) {
+                        (void)handle.TryResume();           // refused: start inline, never lose the child
+                    }
+                } catch (...) {
+                    state.fail(std::current_exception());   // could not even create the runner
+                    state.latch.count_down();
+                }
+            }(), ...);
+        }(std::make_index_sequence<N>{});
+
+        // Shielded on purpose: running children point into this frame, so we must not leave before they are all done.
+        (void)co_await detail::shield(state.latch);
+
+        if (state.first_error) {
+            std::rethrow_exception(state.first_error);
+        }
+        co_return std::apply(
+            [](auto&... slots) { return std::tuple<detail::when_all_result_t<Tasks>...>(std::move(*slots)...); },
+            state.results);
     }
 }

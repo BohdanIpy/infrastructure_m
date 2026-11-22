@@ -1,33 +1,56 @@
 module;
 
-#include <atomic>
+#include <concepts>
+#include <optional>
 #include <stop_token>
+#include <utility>
 
 export module AsyncCoreLibrary:AwaitableCancellationBase;
 
-import :CoroutineStates;
 import :Concepts;
 
-namespace async_core::common
-{
-    using common::CancellableAwaiterConcept;
-}
+export namespace async_core::common {
+/**
+ * @brief Class, which implements utilities for the cancellation on leaf awaitables
+ * @tparam CancelAction Functor or function, which is executed in case of cancellation
+ */
+template <typename CancelAction>
+    requires std::invocable<CancelAction&>
+class AwaitableCancellationBase {
+    std::optional<std::stop_callback<CancelAction>> m_registration;
 
-export namespace async_core::common
-{
-    template <typename Derived>
-    struct AwaitableCancellationBase
-    {
-        std::atomic<AwaitableState> m_state{AwaitableState::Pending};
-        std::stop_token m_st;
+  protected:
+    /**
+     * @brief Function which extracts the stop token from the promise_type.
+     *
+     * @tparam PromiseT promise_type for getting promise
+     * @param promise promise from which extracts stop_token
+     * @return std::stop_token
+     */
+    template <typename PromiseT>
+    [[nodiscard]] static std::stop_token stop_token_of(PromiseT& promise) {
+        if constexpr (requires { HasGetStopTokenConcept<PromiseT>; }) {
+            return promise.GetStopToken();
+        } else {
+            return {};
+        }
+    }
 
-        explicit AwaitableCancellationBase(std::stop_token st) : m_st(std::move(st)) {}
+    /**
+     * @brief Registers a cancellation callback, which is executed when cancellation is requested
+     *
+     * @param token Source of the cancellation
+     * @param action Functor or function for clear
+     */
+    void watch_stop(std::stop_token token, CancelAction action) {
+        if (token.stop_possible()) {
+            m_registration.emplace(std::move(token), std::move(action));
+        }
+    }
 
-        static_assert(
-            CancellableAwaiterConcept<Derived>,
-            "Error: Derived awaiter must implement 'void register_cancellation(std::stop_token)'!"
-        );
-
-        virtual ~AwaitableCancellationBase() = default;
-    };
-}
+    /**
+     * @brief removes the cancellation callback, so after executing it wont free resource 2 times
+     */
+    void unwatch_stop() noexcept { m_registration.reset(); }
+};
+} // namespace async_core::common

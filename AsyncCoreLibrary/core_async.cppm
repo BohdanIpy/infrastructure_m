@@ -11,6 +11,7 @@ export import :TaskTypes;
 export import :SafeCoroutineHandle;
 export import :AwaitableCancellationBase;
 export import :Concepts;
+export import :WaitState;
 
 // policy
 export import :ContinuationPolicy;
@@ -25,7 +26,7 @@ export import :DetachedTask;
 export import :Generator;
 export import :TaskAwaitable;
 export import :BasicPromiseType;
-export import :TaskCancellable
+export import :TaskCancellable;
 
 // context
 export import :SwitchToThread;
@@ -37,6 +38,8 @@ export import :SwitchTo;
 export import :CoroThread;
 export import :ScheduleTypes;
 export import :BulkScheduleResult;
+export import :CancelWait;
+export import :Wake;
 
 // io
 export import :IoTypes;
@@ -52,12 +55,11 @@ export import :AsyncReadSocket;
 export import :AsyncWriteSocket;
 export import :AsyncReadSocketFrom;
 export import :AsyncWriteSocketTo;
-
+export import :IoOperation;
 
 // sync
-export import :AsyncAutoResetEvent;
+export import :AsyncEvent;
 export import :AsyncChannel;
-export import :AsyncManualResetEvent;
 export import :AsyncMutex;
 export import :AsyncSemaphore;
 export import :SyncWait;
@@ -69,3 +71,4 @@ export import :TimerQueue;
 export import :SleepFor;
 export import :SleepUntil;
 export import :TimeoutAfter;
+export import :SleepAwaiter;

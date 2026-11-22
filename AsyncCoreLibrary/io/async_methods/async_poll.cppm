@@ -1,27 +1,23 @@
 module;
 
+#include <cstddef>
 #include <cstdint>
-#include <coroutine>
-#include <system_error>
+#include <cstring>
+#include <span>
+#include <sys/socket.h>
 #include <poll.h>
+#include <liburing.h>
 
 export module AsyncCoreLibrary:AsyncPoll;
 
 import :IoLoop;
 import :IoTypes;
-import :SafeCoroutineHandle;
-import :Exceptions;
-import :Concepts;
-
-namespace async_core::io
-{
-    using common::HasSafeHandleConcept;
-    using common::AsyncPollCancelledOrFailedException;
-}
+import :IoOperation;
 
 export namespace async_core::io
 {
-    struct PollResult {
+    struct PollResult
+    {
         std::int32_t raw_events{0};
 
         [[nodiscard]] bool can_read()  const noexcept { return (raw_events & POLLIN) != 0; }
@@ -30,46 +26,24 @@ export namespace async_core::io
         [[nodiscard]] bool has_error()  const noexcept { return (raw_events & POLLERR) != 0; }
     };
 
-    class AsyncPoll {
-        std::reference_wrapper<IoQueue> m_queue;
-        const SocketT m_fd{-1};
-        const short m_pollEvents{0};
-        IoCtx m_ctx{};
+    /// One-shot poll: completes when one of `events` (POLLIN, POLLOUT, ...) is ready.
+    class AsyncPoll final : public IoOperation<AsyncPoll>
+    {
+        friend class IoOperation<AsyncPoll>;
+        static constexpr bool kCancellable = true;
+
+        SocketT m_fd;
+        short m_events;
+
+        void prepare(io_uring_sqe* sqe) noexcept
+        {
+            io_uring_prep_poll_add(sqe, m_fd, static_cast<unsigned>(m_events));
+        }
 
     public:
-        explicit AsyncPoll(IoQueue& queue, SocketT descriptor, short events) noexcept
-            : m_queue(queue), m_fd(descriptor), m_pollEvents(events)
-        {}
+        AsyncPoll(IoQueue& queue, const SocketT fd, const short events) noexcept
+            : IoOperation(queue), m_fd(fd), m_events(events) {}
 
-        AsyncPoll(const AsyncPoll&) = delete;
-        AsyncPoll& operator=(const AsyncPoll&) = delete;
-        AsyncPoll(AsyncPoll&&) = delete;
-        AsyncPoll& operator=(AsyncPoll&&) = delete;
-
-        [[nodiscard]]
-        bool await_ready() const noexcept { return false; }
-
-        template <typename PromiseT>
-            requires HasSafeHandleConcept<PromiseT>
-        void await_suspend(std::coroutine_handle<PromiseT> h) {
-            m_ctx.safe_coro = h.promise().GetSafeHandle();
-
-            m_ctx.type = EventType::POLL;
-
-            m_queue.get().submit_poll(m_fd, m_pollEvents, &m_ctx);
-        }
-
-        [[nodiscard]]
-        PollResult await_resume() const {
-            if (m_ctx.result < 0) {
-                throw AsyncPollCancelledOrFailedException{
-                    -m_ctx.result,
-                    std::generic_category(),
-                    "Async poll canceled or failed"
-                };
-            }
-
-            return PollResult{ .raw_events = m_ctx.result };
-        }
+        [[nodiscard]] PollResult await_resume() { return PollResult{finish("async poll")}; }
     };
 }

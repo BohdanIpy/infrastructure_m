@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.0...3.28)
+cmake_minimum_required(VERSION 3.11...3.28)
 project(NetworkSocketCpp CXX)
 
 set(CMAKE_CXX_STANDARD 23)

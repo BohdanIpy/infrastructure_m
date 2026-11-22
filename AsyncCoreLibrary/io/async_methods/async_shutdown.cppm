@@ -1,66 +1,36 @@
 module;
 
-#include <coroutine>
-#include <system_error>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <span>
 #include <sys/socket.h>
+
+#include <liburing.h>
 
 export module AsyncCoreLibrary:AsyncShutdown;
 
-import :IoTypes;
 import :IoLoop;
-import :SafeCoroutineHandle;
-import :Concepts;
-
-using async_core::common::HasSafeHandleConcept;
+import :IoTypes;
+import :IoOperation;
 
 export namespace async_core::io
 {
-    class AsyncShutdown
+    /// shutdown(fd, how). Not cancellable: it completes immediately anyway.
+    class AsyncShutdown final : public IoOperation<AsyncShutdown>
     {
-        IoQueue* m_queue{nullptr};
-        const SocketT m_fd{-1};
-        const int m_how{SHUT_WR};
-        IoCtx m_ctx{};
+        friend class IoOperation<AsyncShutdown>;
+        static constexpr bool kCancellable = false;
+
+        SocketT m_fd;
+        int m_how;
+
+        void prepare(io_uring_sqe* sqe) noexcept { io_uring_prep_shutdown(sqe, m_fd, m_how); }
 
     public:
-        explicit AsyncShutdown(
-            IoQueue* queue,
-            SocketT fd,
-            int how = SHUT_WR
-        ) noexcept
-            : m_queue(queue), m_fd(fd), m_how(how)
-        {}
+        AsyncShutdown(IoQueue& queue, const SocketT fd, const int how = SHUT_WR) noexcept
+            : IoOperation(queue), m_fd(fd), m_how(how) {}
 
-        AsyncShutdown(const AsyncShutdown&) = delete;
-        AsyncShutdown& operator=(const AsyncShutdown&) = delete;
-        AsyncShutdown(AsyncShutdown&&) = delete;
-        AsyncShutdown& operator=(AsyncShutdown&&) = delete;
-
-        [[nodiscard]]
-        bool await_ready() const noexcept { return false; }
-
-        template <typename PromiseT>
-            requires HasSafeHandleConcept<PromiseT>
-        void await_suspend(std::coroutine_handle<PromiseT> h) {
-            m_ctx.safe_coro = h.promise().GetSafeHandle();
-
-            m_ctx.type = EventType::SHUTDOWN;
-
-            m_queue->submit_shutdown(
-                m_fd,
-                m_how,
-                &m_ctx
-            );
-        }
-
-        void await_resume() const {
-            if (m_ctx.result < 0) {
-                throw std::system_error(
-                    -m_ctx.result,
-                    std::generic_category(),
-                    "Async shutdown failed"
-                );
-            }
-        }
+        void await_resume() { (void)finish("async shutdown"); }
     };
 }

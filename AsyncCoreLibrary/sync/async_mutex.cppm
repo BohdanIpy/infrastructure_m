@@ -1,8 +1,8 @@
 module;
 
-#include <atomic>
 #include <cassert>
 #include <coroutine>
+#include <list>
 #include <memory>
 #include <mutex>
 #include <queue>
@@ -12,158 +12,217 @@ export module AsyncCoreLibrary:AsyncMutex;
 
 import :ICoroScheduler;
 import :SafeCoroutineHandle;
-import :ScheduleTypes;
+import :AwaitableCancellationBase;
+import :WaitState;
 import :Concepts;
+import :CancelWait;
+import :Wake;
+import :Exceptions;
 
-using async_core::coro_loop::ICoroScheduler;
-using async_core::common::ScheduleStatus;
-using async_core::common::SafeCoroutineHandle;
-using async_core::common::HasSafeHandleConcept;
+namespace async_core::sync {
+using common::AwaitableCancellationBase;
+using common::HasSafeHandleConcept;
+using common::OperationCancelledException;
+using common::WaitState;
+using coro_loop::CancelWait;
+using coro_loop::ICoroScheduler;
+using coro_loop::wake;
+using WaiterQueue = std::queue<std::shared_ptr<WaitState>, std::list<std::shared_ptr<WaitState>>>;
+} // namespace async_core::sync
 
-export namespace async_core::sync
-{
-    class AsyncMutex
-    {
-        ICoroScheduler& m_scheduler;
-        std::atomic<bool> m_locked{false};
-        std::mutex m_mtx;
-        std::queue<SafeCoroutineHandle> m_waiters;
+export namespace async_core::sync {
+/**
+ * Mutex for coroutines. Waiting does not block a thread.
+ *
+ *   auto guard = co_await mutex;       // or mutex.lock_async()
+ *
+ * - FIFO and direct hand-off: unlock() gives the lock to the first waiting coroutine without ever
+ * releasing it, so nobody can sneak in between (try_lock() also fails while somebody waits).
+ * - Cancellation: if the awaiting coroutine is cancelled while waiting, `co_await mutex` throws
+ *   OperationCancelledException and the lock is NOT held. A cancelled waiter never receives the
+ * lock.
+ * - A waiter is resumed through the scheduler; if the scheduler refuses the handle it is resumed
+ * inline instead, so a hand-off is never lost (the old code dropped the waiter, which then hung
+ * forever).
+ * - The lock is not tied to a thread: a coroutine may be resumed on another worker while holding
+ * it.
+ *
+ * Do not co_await the same mutex twice in one coroutine (self-deadlock), as with any non-recursive
+ * mutex. Parked waiters are released as cancelled by the destructor. The scheduler must outlive the
+ * mutex.
+ */
+class AsyncMutex {
+    ICoroScheduler& m_scheduler;
+    std::mutex m_mtx;
+    bool m_locked{false};  // guarded by m_mtx
+    WaiterQueue m_waiters; // guarded by m_mtx
 
-    public:
-        explicit AsyncMutex(ICoroScheduler& scheduler) noexcept
-            : m_scheduler(scheduler) {}
+    /// Caller holds m_mtx.
+    void purge_dead_front() noexcept {
+        while (!m_waiters.empty() && m_waiters.front()->IsFinished()) {
+            m_waiters.pop();
+        }
+    }
 
-        AsyncMutex(const AsyncMutex&) = delete;
-        AsyncMutex& operator=(const AsyncMutex&) = delete;
-        AsyncMutex(AsyncMutex&&) noexcept = delete;
-        AsyncMutex& operator=(AsyncMutex&&) noexcept = delete;
+  public:
+    class [[nodiscard]] ScopedLock {
+        AsyncMutex* m_mutex{nullptr};
 
-        class [[nodiscard]] ScopedLock {
-            AsyncMutex* m_mutex{nullptr};
+      public:
+        ScopedLock() noexcept = default;
+        explicit ScopedLock(AsyncMutex* mutex) noexcept
+            : m_mutex(mutex) {} // adopts a lock that is already held
 
-        public:
-            explicit ScopedLock(AsyncMutex* mtx) noexcept : m_mutex(mtx) {}
+        ScopedLock(const ScopedLock&) = delete;
+        ScopedLock& operator=(const ScopedLock&) = delete;
 
-            ~ScopedLock() {
-                if (m_mutex) {
-                    m_mutex->unlock();
-                }
+        ScopedLock(ScopedLock&& other) noexcept
+            : m_mutex(std::exchange(other.m_mutex, nullptr)) {}
+
+        ScopedLock& operator=(ScopedLock&& other) noexcept {
+            if (this != &other) {
+                unlock();
+                m_mutex = std::exchange(other.m_mutex, nullptr);
             }
+            return *this;
+        }
 
-            ScopedLock(const ScopedLock&) = delete;
-            ScopedLock& operator=(const ScopedLock&) = delete;
+        ~ScopedLock() { unlock(); }
 
-            ScopedLock(ScopedLock&& other) noexcept
-                : m_mutex(std::exchange(other.m_mutex, nullptr)) {}
-
-            ScopedLock& operator=(ScopedLock&& other) noexcept {
-                if (this != &other) {
-                    if (m_mutex) {
-                        m_mutex->unlock();
-                    }
-                    m_mutex = std::exchange(other.m_mutex, nullptr);
-                }
-                return *this;
+        /// Unlocks early. Safe to call twice.
+        void unlock() noexcept {
+            if (AsyncMutex* mutex = std::exchange(m_mutex, nullptr)) {
+                mutex->unlock();
             }
+        }
 
-            void release() noexcept {
-                m_mutex = nullptr;
-            }
+        /// Gives up the guard WITHOUT unlocking; the caller becomes responsible for
+        /// AsyncMutex::unlock().
+        AsyncMutex* release() noexcept { return std::exchange(m_mutex, nullptr); }
 
-            [[nodiscard]] bool owns_lock() const noexcept {
-                return m_mutex != nullptr;
-            }
-        };
+        [[nodiscard]] bool owns_lock() const noexcept { return m_mutex != nullptr; }
+    };
 
-        struct LockAwaiter
-        {
-            AsyncMutex& m_mutex;
+    class LockAwaiter : private AwaitableCancellationBase<CancelWait> {
+        friend class AsyncMutex;
 
-            bool await_ready() noexcept {
-                return m_mutex.try_lock();
-            }
+        AsyncMutex& m_mutex;
+        std::shared_ptr<WaitState> m_wait; // null if the lock was taken in await_ready()
 
-            template <typename Promise>
-                requires HasSafeHandleConcept<Promise>
-            bool await_suspend(std::coroutine_handle<Promise> h) noexcept {
-                std::unique_lock lock(m_mutex.m_mtx);
+        explicit LockAwaiter(AsyncMutex& mutex) noexcept
+            : m_mutex(mutex) {}
 
-                if (!m_mutex.m_locked.load(std::memory_order_relaxed) && m_mutex.m_waiters.empty()) {
-                    m_mutex.m_locked.store(true, std::memory_order_release);
+      public:
+        [[nodiscard]] bool await_ready() noexcept { return m_mutex.try_lock(); }
+
+        template <typename PromiseT>
+            requires HasSafeHandleConcept<PromiseT>
+        bool await_suspend(std::coroutine_handle<PromiseT> caller) {
+            auto& promise = caller.promise();
+
+            auto state = std::make_shared<WaitState>(promise.GetSafeHandle());
+            m_wait = state;
+
+            // Only completes the state, so it is safe before the lock (even if stop was already
+            // requested).
+            this->watch_stop(this->stop_token_of(promise), CancelWait{state, &m_mutex.m_scheduler});
+
+            {
+                std::lock_guard lock(m_mutex.m_mtx);
+                m_mutex.purge_dead_front();
+
+                if (!m_mutex.m_locked && m_mutex.m_waiters.empty()) {
+                    bool unused = false;
+                    if (state->complete(WaitState::Completed, unused)) {
+                        m_mutex.m_locked = true; // we own it; continue inline
+                    } // else cancelled meanwhile: lock stays free, await_resume throws
                     return false;
                 }
-
-                m_mutex.m_waiters.push(h.promise().GetSafeHandle());
-                return true;
+                if (state->is_finished()) {
+                    return false; // cancelled before queueing
+                }
+                m_mutex.m_waiters.push(state);
             }
 
-            ScopedLock await_resume() noexcept {
-                return ScopedLock(&m_mutex);
-            }
-        };
-
-        bool try_lock() noexcept {
-            std::unique_lock lock(m_mtx);
-            if (m_locked.load(std::memory_order_relaxed) || !m_waiters.empty()) {
-                return false;
-            }
-            m_locked.store(true, std::memory_order_release);
-            return true;
+            return state->arm(); // after this only `state` may be used
         }
 
-        [[nodiscard]] LockAwaiter lock_async() noexcept {
-            return LockAwaiter{*this};
-        }
-
-        [[nodiscard]] LockAwaiter operator co_await() noexcept {
-            return LockAwaiter{*this};
-        }
-
-        void unlock() noexcept {
-            while (true) {
-                SafeCoroutineHandle handle_to_resume{};
-                {
-                    std::unique_lock lock(m_mtx);
-                    assert(m_locked.load(std::memory_order_relaxed) && "Double unlock detected on AsyncMutex");
-
-                    while (!m_waiters.empty()) {
-                        handle_to_resume = std::move(m_waiters.front());
-                        m_waiters.pop();
-
-                        if (handle_to_resume.IsValid()) {
-                            break;
-                        }
-                    }
-
-                    if (!handle_to_resume.IsValid()) {
-                        m_locked.store(false, std::memory_order_release);
-                        return;
-                    }
-                }
-
-                const ScheduleStatus status = m_scheduler.schedule(std::move(handle_to_resume));
-
-                if (status == ScheduleStatus::Success) {
-                    return;
-                }
-
-                if (status == ScheduleStatus::InvalidHandle) {
-                    continue;
-                }
-
-                if (status == ScheduleStatus::SchedulerStopped) {
-                    std::unique_lock lock(m_mtx);
-                    if (m_waiters.empty()) {
-                        m_locked.store(false, std::memory_order_release);
-                    } else {
-                        lock.unlock();
-                        continue;
-                    }
-                    return;
-                }
-
-                return;
+        [[nodiscard]] ScopedLock await_resume() {
+            this->unwatch_stop();
+            if (m_wait && m_wait->GetPhase() != WaitState::Completed) {
+                throw OperationCancelledException{}; // cancelled: the lock was never handed to us
             }
+            return ScopedLock{&m_mutex};
         }
     };
-}
+
+    explicit AsyncMutex(ICoroScheduler& scheduler) noexcept
+        : m_scheduler(scheduler) {}
+
+    AsyncMutex(const AsyncMutex&) = delete;
+    AsyncMutex& operator=(const AsyncMutex&) = delete;
+    AsyncMutex(AsyncMutex&&) = delete;
+    AsyncMutex& operator=(AsyncMutex&&) = delete;
+
+    ~AsyncMutex() {
+        WaiterQueue pending;
+        {
+            std::lock_guard lock(m_mtx);
+            pending.swap(m_waiters);
+        }
+        while (!pending.empty()) {
+            bool resume_needed = false;
+            if (pending.front()->Complete(WaitState::Cancelled, resume_needed) && resume_needed) {
+                wake(m_scheduler, *pending.front());
+            }
+            pending.pop();
+        }
+    }
+
+    /// Takes the lock if it is free and nobody is queued. After true the caller must call unlock()
+    /// (or adopt it with ScopedLock{&m}).
+    [[nodiscard]] bool try_lock() noexcept {
+        std::lock_guard lock(m_mtx);
+        purge_dead_front();
+        if (m_locked || !m_waiters.empty()) {
+            return false;
+        }
+        m_locked = true;
+        return true;
+    }
+
+    [[nodiscard]] LockAwaiter lock_async() noexcept { return LockAwaiter{*this}; }
+    [[nodiscard]] LockAwaiter operator co_await() noexcept { return LockAwaiter{*this}; }
+
+    /// Hands the lock to the first live waiter, or frees it.
+    void unlock() noexcept {
+        ICoroScheduler& scheduler =
+            m_scheduler; // the new owner may destroy the mutex as soon as it runs
+        std::shared_ptr<WaitState> chosen;
+        bool resume_needed = false;
+        {
+            std::lock_guard lock(m_mtx);
+            assert(m_locked && "double unlock of AsyncMutex");
+
+            while (!m_waiters.empty()) {
+                auto candidate = std::move(m_waiters.front());
+                m_waiters.pop();
+                bool needed = false;
+                if (candidate->Complete(WaitState::Completed,
+                                        needed)) { // cancelled waiters fail here and are skipped
+                    chosen = std::move(candidate);
+                    resume_needed = needed;
+                    break;
+                }
+            }
+            if (!chosen) {
+                m_locked = false;
+            } // else: the lock stays locked, it now belongs to `chosen`
+        }
+        if (chosen && resume_needed) {
+            wake(scheduler, *chosen); // else it has not finished suspending: its arm() fails and it
+                                      // continues inline
+        }
+    }
+};
+} // namespace async_core::sync

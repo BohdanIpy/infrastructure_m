@@ -1,72 +1,44 @@
 module;
 
-#include <coroutine>
-#include <system_error>
+#include <cstddef>
+#include <cstdint>
 #include <cstring>
+#include <span>
 #include <sys/socket.h>
+
+#include <liburing.h>
 
 export module AsyncCoreLibrary:AsyncConnect;
 
-import :IoTypes;
 import :IoLoop;
-import :SafeCoroutineHandle;
-import :Exceptions;
-import :Concepts;
-
-namespace async_core::io
-{
-    using common::HasSafeHandleConcept;
-    using common::AsyncConnectFailedException;
-}
+import :IoTypes;
+import :IoOperation;
 
 export namespace async_core::io
 {
-    class AsyncConnect
+    /// connect(). The address is copied, so it may be a temporary.
+    class AsyncConnect final : public IoOperation<AsyncConnect>
     {
-        std::reference_wrapper<IoQueue> m_queue;
-        const SocketT m_fd{-1};
-        const sockaddr* m_addr;
-        const socklen_t m_addrlen;
-        IoCtx m_ctx{};
+        friend class IoOperation<AsyncConnect>;
+        static constexpr bool kCancellable = true;
+
+        SocketT m_fd;
+        sockaddr_storage m_addr{};
+        socklen_t m_addrlen;
+
+        void prepare(io_uring_sqe* sqe) noexcept
+        {
+            io_uring_prep_connect(sqe, m_fd, reinterpret_cast<const sockaddr*>(&m_addr), m_addrlen);
+        }
 
     public:
-        AsyncConnect(
-            IoQueue& queue,
-            const SocketT fd,
-            const sockaddr* addr,
-            const socklen_t addrlen
-        ) noexcept : m_queue(queue), m_fd(fd), m_addr(addr), m_addrlen(addrlen)
-        {}
-
-        AsyncConnect(const AsyncConnect&) = delete;
-        AsyncConnect& operator=(const AsyncConnect&) = delete;
-        AsyncConnect(AsyncConnect&&) = delete;
-        AsyncConnect& operator=(AsyncConnect&&) = delete;
-
-        [[nodiscard]]
-        bool await_ready() const noexcept { return false; }
-
-        template <typename PromiseT>
-            requires HasSafeHandleConcept<PromiseT>
-        void await_suspend(std::coroutine_handle<PromiseT> h) {
-            m_ctx.safe_coro = h.promise().GetSafeHandle();
-
-            m_ctx.prepare_connect(m_addr, m_addrlen);
-
-            m_queue.get().submit_connect(
-                m_fd,
-                &m_ctx
-            );
+        AsyncConnect(IoQueue& queue, const SocketT fd, const sockaddr* address, const socklen_t length) noexcept
+            : IoOperation(queue), m_fd(fd),
+              m_addrlen(length > sizeof(sockaddr_storage) ? static_cast<socklen_t>(sizeof(sockaddr_storage)) : length)
+        {
+            std::memcpy(&m_addr, address, m_addrlen);
         }
 
-        void await_resume() const {
-            if (m_ctx.result < 0) {
-                throw AsyncConnectFailedException{
-                    -m_ctx.result,
-                    std::generic_category(),
-                    "Async connect failed"
-                };
-            }
-        }
+        void await_resume() { (void)finish("async connect"); }
     };
 }

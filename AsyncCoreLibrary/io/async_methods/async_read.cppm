@@ -1,77 +1,46 @@
 module;
 
-#include <system_error>
-#include <coroutine>
-#include <span>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <span>
+#include <sys/socket.h>
+
+#include <liburing.h>
 
 export module AsyncCoreLibrary:AsyncRead;
 
-import :IoTypes;
 import :IoLoop;
-import :SafeCoroutineHandle;
-import :Exceptions;
-import :Concepts;
-
-namespace async_core::io
-{
-    using common::HasSafeHandleConcept;
-    using common::AsyncFdReadFailedException;
-}
+import :IoTypes;
+import :IoOperation;
 
 export namespace async_core::io
 {
-    class AsyncRead {
-        std::reference_wrapper<IoQueue> m_queue;
-        const SocketT m_fd{-1};
-        IoCtx m_ctx{};
+    /// read() on any file descriptor. `offset` = -1 reads at the current position (pipes, sockets, streams).
+    /// Returns the number of bytes read; 0 means end of file. A short read is normal.
+    class AsyncRead final : public IoOperation<AsyncRead>
+    {
+        friend class IoOperation<AsyncRead>;
+        static constexpr bool kCancellable = true;
+
+        SocketT m_fd;
         std::span<std::byte> m_buffer;
-        const std::uint64_t m_offset = static_cast<std::uint64_t>(-1);
+        std::uint64_t m_offset;
+
+        void prepare(io_uring_sqe* sqe) noexcept
+        {
+            io_uring_prep_read(sqe, m_fd, m_buffer.data(), static_cast<unsigned>(m_buffer.size()), m_offset);
+        }
+        [[nodiscard]] bool nothing_to_do() const noexcept { return m_buffer.empty(); }
+
     public:
-        explicit AsyncRead(
-            IoQueue& queue,
-            const SocketT fd,
-            std::span<std::byte> buffer,
-            const std::uint64_t offset = static_cast<std::uint64_t>(-1)
-        ) noexcept
-            : m_queue(queue), m_fd(fd), m_buffer(buffer), m_offset(offset)
-        {}
+        AsyncRead(IoQueue& queue, const SocketT fd, const std::span<std::byte> buffer,
+                  const std::uint64_t offset = static_cast<std::uint64_t>(-1)) noexcept
+            : IoOperation(queue), m_fd(fd), m_buffer(buffer), m_offset(offset) {}
 
-        AsyncRead(const AsyncRead&) = delete;
-        AsyncRead& operator=(const AsyncRead&) = delete;
-        AsyncRead(AsyncRead&&) = delete;
-        AsyncRead& operator=(AsyncRead&&) = delete;
-
-        [[nodiscard]]
-        bool await_ready() const noexcept {
-            return m_buffer.empty();
-        }
-
-        template <typename PromiseT>
-            requires HasSafeHandleConcept<PromiseT>
-        void await_suspend(std::coroutine_handle<PromiseT> h) {
-            m_ctx.safe_coro = h.promise().GetSafeHandle();
-
-            m_ctx.prepare_stream_read(m_buffer, m_offset);
-
-            m_queue.get().submit_read(m_fd, &m_ctx);
-        }
-
-        [[nodiscard]]
-        std::size_t await_resume() const {
-            if (m_buffer.empty()) {
-                return 0;
-            }
-
-            if (m_ctx.result < 0) {
-                throw AsyncFdReadFailedException{
-                    -m_ctx.result,
-                    std::generic_category(),
-                    "Async fd read failed"
-                };
-            }
-            return static_cast<std::size_t>(m_ctx.result);
+        [[nodiscard]] std::size_t await_resume()
+        {
+            return m_buffer.empty() ? 0 : static_cast<std::size_t>(finish("async read"));
         }
     };
 }

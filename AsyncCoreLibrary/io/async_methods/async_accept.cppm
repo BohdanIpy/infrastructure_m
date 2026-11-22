@@ -1,72 +1,53 @@
 module;
 
-#include <coroutine>
-#include <system_error>
-#include <tuple>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <span>
 #include <sys/socket.h>
+
+#include <liburing.h>
 
 export module AsyncCoreLibrary:AsyncAccept;
 
-import :IoTypes;
 import :IoLoop;
-import :SafeCoroutineHandle;
-import :Concepts;
-
-namespace async_core::io
-{
-    using common::HasSafeHandleConcept;
-}
+import :IoTypes;
+import :IoOperation;
 
 export namespace async_core::io
 {
-    class AsyncAccept {
-        std::reference_wrapper<IoQueue> m_queue;
-        const SocketT m_listenFd{-1};
-        const int m_flags{SOCK_CLOEXEC | SOCK_NONBLOCK};
-        IoCtx m_ctx{};
+    struct AcceptResult
+    {
+        SocketT fd{-1};         // the new connection: the caller owns it and must close it
+        SocketAddress peer{};
+    };
 
-    public:
-        explicit AsyncAccept(IoQueue& queue, SocketT listenFd, int flags = SOCK_CLOEXEC | SOCK_NONBLOCK) noexcept
-            : m_queue(queue), m_listenFd(listenFd), m_flags(flags)
-        {}
+    /// accept4() on a listening socket. If the accept completes at the very moment a stop is requested, the connection is
+    /// returned (never dropped), and the next checkpoint reports the cancellation.
+    class AsyncAccept final : public IoOperation<AsyncAccept>
+    {
+        friend class IoOperation<AsyncAccept>;
+        static constexpr bool kCancellable = true;
 
-        AsyncAccept(const AsyncAccept&) = delete;
-        AsyncAccept& operator=(const AsyncAccept&) = delete;
-        AsyncAccept(AsyncAccept&&) = delete;
-        AsyncAccept& operator=(AsyncAccept&&) = delete;
+        SocketT m_listen_fd;
+        int m_flags;
+        sockaddr_storage m_addr{};
+        socklen_t m_addrlen{sizeof(sockaddr_storage)};
 
-        [[nodiscard]]
-        bool await_ready() const noexcept { return false; }
-
-        template <typename PromiseT>
-            requires HasSafeHandleConcept<PromiseT>
-        void await_suspend(std::coroutine_handle<PromiseT> h) {
-            m_ctx.safe_coro = h.promise().GetSafeHandle();
-
-            m_ctx.prepare_accept();
-
-            m_queue.get().submit_accept(
-                m_listenFd,
-                &m_ctx,
-                m_flags
-            );
+        void prepare(io_uring_sqe* sqe) noexcept
+        {
+            m_addrlen = sizeof(m_addr);
+            io_uring_prep_accept(sqe, m_listen_fd, reinterpret_cast<sockaddr*>(&m_addr), &m_addrlen, m_flags);
         }
 
-        [[nodiscard]]
-        std::tuple<SocketT, sockaddr_storage, socklen_t> await_resume() {
-            if (m_ctx.result < 0) {
-                throw std::system_error(
-                    -m_ctx.result,
-                    std::generic_category(),
-                    "Async accept failed"
-                );
-            }
+    public:
+        AsyncAccept(IoQueue& queue, const SocketT listen_fd, const int flags = SOCK_CLOEXEC | SOCK_NONBLOCK) noexcept
+            : IoOperation(queue), m_listen_fd(listen_fd), m_flags(flags) {}
 
-            return {
-                (m_ctx.result),
-                m_ctx.payload.connection.addr,
-                m_ctx.payload.connection.addrlen
-            };
+        [[nodiscard]] AcceptResult await_resume()
+        {
+            const int fd = finish("async accept");
+            return {fd, SocketAddress{m_addr, m_addrlen}};
         }
     };
 }

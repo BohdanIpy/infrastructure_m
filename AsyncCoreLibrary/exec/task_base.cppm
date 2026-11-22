@@ -10,74 +10,65 @@ import :TaskTypes;
 import :CoroutineStates;
 import :Concepts;
 
-namespace async_core::exec
-{
-    using common::SafeCoroutineHandle;
-    using common::IsWiredTaskEsConcept;
-    using common::CoroutineState;
-}
+namespace async_core::exec {
+using common::CoroutineState;
+using common::IsWiredTaskEsConcept;
+using common::SafeCoroutineHandle;
+} // namespace async_core::exec
 
-export namespace async_core::exec
-{
-    template <typename TaskTypeT>
-    class TaskBase {
-    public:
-        using task_type = TaskTypeT;
-        static constexpr bool owns_frame = IsWiredTaskEsConcept<TaskTypeT>;
-    protected:
-        SafeCoroutineHandle safe_handle;
-        void destroy_frame() noexcept {
-            if constexpr (owns_frame) {
-                assert((!safe_handle.IsValid() || safe_handle.LoadState() == CoroutineState::Created || safe_handle.IsDone())
-                       && "Task destroyed while its coroutine may still be resumed: RequestStop() and wait for completion first");
-                (void)safe_handle.Destroy();
-            }
+export namespace async_core::exec {
+template <typename TaskTypeT> class TaskBase {
+  public:
+    using task_type = TaskTypeT;
+    static constexpr bool owns_frame = IsWiredTaskEsConcept<TaskTypeT>;
+
+  protected:
+    SafeCoroutineHandle m_safeHandle;
+    void destroy_frame() noexcept {
+        if constexpr (owns_frame) {
+            assert((!m_safeHandle.IsValid() ||
+                    m_safeHandle.LoadState() == CoroutineState::Created || m_safeHandle.IsDone()) &&
+                   "Task destroyed while its coroutine may still be resumed: RequestStop() and "
+                   "wait for completion first");
+            (void)m_safeHandle.Destroy();
         }
-    public:
-        explicit TaskBase(SafeCoroutineHandle handle) : safe_handle(std::move(handle)) {}
+    }
 
-        TaskBase(const TaskBase&) = delete;
-        TaskBase& operator=(const TaskBase&) = delete;
+  public:
+    explicit TaskBase(SafeCoroutineHandle handle)
+        : m_safeHandle(std::move(handle)) {}
 
-        TaskBase(TaskBase&& other) noexcept
-            : safe_handle(std::exchange(other.safe_handle, SafeCoroutineHandle{})) {}
+    TaskBase(const TaskBase&) = delete;
+    TaskBase& operator=(const TaskBase&) = delete;
 
-        TaskBase& operator=(TaskBase&& other) noexcept {
-            if (this != &other) {
-                destroy_frame();
-                safe_handle = std::exchange(other.safe_handle, SafeCoroutineHandle{});
-            }
-            return *this;
-        }
+    TaskBase(TaskBase&& other) noexcept
+        : m_safeHandle(std::exchange(other.m_safeHandle, SafeCoroutineHandle{})) {}
 
-        ~TaskBase()
-        {
+    TaskBase& operator=(TaskBase&& other) noexcept {
+        if (this != &other) {
             destroy_frame();
+            m_safeHandle = std::exchange(other.m_safeHandle, SafeCoroutineHandle{});
         }
+        return *this;
+    }
 
-        [[nodiscard]] SafeCoroutineHandle GetSafeHandle() const noexcept {
-            return safe_handle;
-        }
+    ~TaskBase() { destroy_frame(); }
 
-        [[nodiscard]] bool IsValid() const noexcept {
-            return safe_handle.IsValid();
-        }
+    [[nodiscard]] SafeCoroutineHandle GetSafeHandle() const noexcept { return m_safeHandle; }
 
-        void TryResume() const
-        {
-            if (safe_handle.IsValid())
-            {
-                (void)safe_handle.TryResume();
-            }
-        }
+    [[nodiscard]] bool IsValid() const noexcept { return m_safeHandle.IsValid(); }
 
-        bool TryStart() const
-        {
-            if (safe_handle.IsValid())
-            {
-                return safe_handle.TryStart();
-            }
-            return false;
+    void TryResume() const {
+        if (m_safeHandle.IsValid()) {
+            (void)m_safeHandle.TryResume();
         }
-    };
-}
+    }
+
+    [[nodiscard]] bool TryStart() const {
+        if (m_safeHandle.IsValid()) {
+            return m_safeHandle.TryStart();
+        }
+        return false;
+    }
+};
+} // namespace async_core::exec

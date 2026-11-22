@@ -1,77 +1,46 @@
 module;
 
-#include <coroutine>
-#include <system_error>
-#include <span>
 #include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <span>
+#include <sys/socket.h>
+
+#include <liburing.h>
 
 export module AsyncCoreLibrary:AsyncWriteSocket;
 
-import :IoTypes;
 import :IoLoop;
-import :SafeCoroutineHandle;
-import :Concepts;
-
-using async_core::common::HasSafeHandleConcept;
+import :IoTypes;
+import :IoOperation;
 
 export namespace async_core::io
 {
-    class AsyncWriteSocket
+    /// send() on a connected socket. MSG_NOSIGNAL is on by default, so a closed peer is an IoError (EPIPE), not SIGPIPE.
+    /// Returns the number of bytes sent, which may be LESS than the buffer size: loop if you need all of it.
+    class AsyncWriteSocket final : public IoOperation<AsyncWriteSocket>
     {
-        IoQueue* m_queue{nullptr};
-        const SocketT m_fd{-1};
-        const std::span<std::byte> m_buffer;
-        const int m_flags{0};
-        IoCtx m_ctx{};
+        friend class IoOperation<AsyncWriteSocket>;
+        static constexpr bool kCancellable = true;
+
+        SocketT m_fd;
+        std::span<const std::byte> m_buffer;
+        int m_flags;
+
+        void prepare(io_uring_sqe* sqe) noexcept
+        {
+            io_uring_prep_send(sqe, m_fd, m_buffer.data(), m_buffer.size(), m_flags);
+        }
+        [[nodiscard]] bool nothing_to_do() const noexcept { return m_buffer.empty(); }
 
     public:
-        explicit AsyncWriteSocket(
-            IoQueue* queue,
-            const SocketT fd,
-            const std::span<std::byte> buffer,
-            const int flags = 0
-        ) noexcept
-            : m_queue(queue), m_fd(fd), m_buffer(buffer), m_flags(flags)
-        {}
+        AsyncWriteSocket(IoQueue& queue, const SocketT fd, const std::span<const std::byte> buffer,
+                         const int flags = MSG_NOSIGNAL) noexcept
+            : IoOperation(queue), m_fd(fd), m_buffer(buffer), m_flags(flags) {}
 
-        AsyncWriteSocket(const AsyncWriteSocket&) = delete;
-        AsyncWriteSocket& operator=(const AsyncWriteSocket&) = delete;
-        AsyncWriteSocket(AsyncWriteSocket&&) = delete;
-        AsyncWriteSocket& operator=(AsyncWriteSocket&&) = delete;
-
-        [[nodiscard]]
-        bool await_ready() const noexcept {
-            return m_buffer.empty();
-        }
-
-        template <typename PromiseT>
-            requires HasSafeHandleConcept<PromiseT>
-        void await_suspend(std::coroutine_handle<PromiseT> h) {
-            m_ctx.safe_coro = h.promise().GetSafeHandle();
-
-            m_ctx.prepare_stream_write(m_buffer);
-
-            m_queue->submit_tcp_socket_write(
-                m_fd,
-                &m_ctx,
-                m_flags
-            );
-        }
-
-        [[nodiscard]]
-        std::size_t await_resume() const {
-            if (m_buffer.empty()) {
-                return 0;
-            }
-
-            if (m_ctx.result < 0) {
-                throw std::system_error(
-                    -m_ctx.result,
-                    std::generic_category(),
-                    "Async socket write failed"
-                );
-            }
-            return static_cast<std::size_t>(m_ctx.result);
+        [[nodiscard]] std::size_t await_resume()
+        {
+            return m_buffer.empty() ? 0 : static_cast<std::size_t>(finish("async socket write"));
         }
     };
 }

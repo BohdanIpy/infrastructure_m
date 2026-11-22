@@ -1,84 +1,63 @@
 module;
 
-#include <coroutine>
 #include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <span>
-#include <system_error>
-#include <tuple>
 #include <sys/socket.h>
+
+#include <liburing.h>
 
 export module AsyncCoreLibrary:AsyncReadSocketFrom;
 
-import :IoTypes;
 import :IoLoop;
-import :SafeCoroutineHandle;
-import :Concepts;
-
-using async_core::common::HasSafeHandleConcept;
+import :IoTypes;
+import :IoOperation;
 
 export namespace async_core::io
 {
-    class AsyncReadSocketFrom
+    struct ReceiveFromResult
     {
-        IoQueue* m_queue{nullptr};
-        const SocketT m_fd{-1};
-        std::span<std::byte> m_buffer{};
-        const int m_flags{0};
-        IoCtx m_ctx{};
+        std::size_t bytes{0};
+        SocketAddress peer{};
+    };
+
+    /// recvmsg() for datagram sockets: one datagram and the address it came from.
+    class AsyncReadSocketFrom final : public IoOperation<AsyncReadSocketFrom>
+    {
+        friend class IoOperation<AsyncReadSocketFrom>;
+        static constexpr bool kCancellable = true;
+
+        SocketT m_fd;
+        std::span<std::byte> m_buffer;
+        int m_flags;
+        sockaddr_storage m_addr{};
+        iovec m_iov{};
+        msghdr m_msg{};
+
+        void prepare(io_uring_sqe* sqe) noexcept
+        {
+            m_iov.iov_base = m_buffer.data();
+            m_iov.iov_len = m_buffer.size();
+            m_msg.msg_name = &m_addr;
+            m_msg.msg_namelen = sizeof(m_addr);
+            m_msg.msg_iov = &m_iov;
+            m_msg.msg_iovlen = 1;
+            io_uring_prep_recvmsg(sqe, m_fd, &m_msg, static_cast<unsigned>(m_flags));
+        }
+        [[nodiscard]] bool nothing_to_do() const noexcept { return m_buffer.empty(); }
 
     public:
-        explicit AsyncReadSocketFrom(
-            IoQueue* queue,
-            const SocketT fd,
-            std::span<std::byte> buffer,
-            const int flags = 0
-        ) noexcept
-            : m_queue(queue), m_fd(fd), m_buffer(buffer), m_flags(flags) {}
+        AsyncReadSocketFrom(IoQueue& queue, const SocketT fd, const std::span<std::byte> buffer, const int flags = 0) noexcept
+            : IoOperation(queue), m_fd(fd), m_buffer(buffer), m_flags(flags) {}
 
-        AsyncReadSocketFrom(const AsyncReadSocketFrom&) = delete;
-        AsyncReadSocketFrom& operator=(const AsyncReadSocketFrom&) = delete;
-        AsyncReadSocketFrom(AsyncReadSocketFrom&&) = delete;
-        AsyncReadSocketFrom& operator=(AsyncReadSocketFrom&&) = delete;
-
-        [[nodiscard]]
-        bool await_ready() const noexcept {
-            return m_buffer.empty();
-        }
-
-        template <typename PromiseT>
-            requires HasSafeHandleConcept<PromiseT>
-        void await_suspend(std::coroutine_handle<PromiseT> h) {
-            m_ctx.safe_coro = h.promise().GetSafeHandle();
-
-            m_ctx.prepare_udp_recv(m_buffer);
-
-            m_queue->submit_read_socket_from(
-                m_fd,
-                &m_ctx,
-                m_flags
-            );
-        }
-
-        [[nodiscard]]
-        std::tuple<std::size_t, sockaddr_storage, socklen_t> await_resume() const {
+        [[nodiscard]] ReceiveFromResult await_resume()
+        {
             if (m_buffer.empty()) {
-                return {0, {}, 0};
+                return {};
             }
-
-            if (m_ctx.result < 0) {
-                throw std::system_error(
-                    -m_ctx.result,
-                    std::generic_category(),
-                    "Async UDP socket read failed"
-                );
-            }
-
-            const auto& dg = m_ctx.payload.datagram;
-            return std::make_tuple(
-                static_cast<std::size_t>(m_ctx.result),
-                dg.remote_addr,
-                dg.msg.msg_namelen
-            );
+            const auto bytes = static_cast<std::size_t>(finish("async datagram read"));
+            return {bytes, SocketAddress{m_addr, m_msg.msg_namelen}};
         }
     };
 }

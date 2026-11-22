@@ -1,90 +1,59 @@
 module;
 
-#include <coroutine>
 #include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <span>
-#include <system_error>
 #include <sys/socket.h>
+
+#include <liburing.h>
 
 export module AsyncCoreLibrary:AsyncWriteSocketTo;
 
-import :IoTypes;
 import :IoLoop;
-import :SafeCoroutineHandle;
-import :Concepts;
-
-using async_core::common::HasSafeHandleConcept;
+import :IoTypes;
+import :IoOperation;
 
 export namespace async_core::io
 {
-    class AsyncWriteSocketTo
+    /// sendmsg() for datagram sockets: one datagram to `destination`. The address is copied, so it may be a temporary.
+    class AsyncWriteSocketTo final : public IoOperation<AsyncWriteSocketTo>
     {
-        IoQueue* m_queue{nullptr};
-        const SocketT m_fd{-1};
-        const std::span<std::byte> m_buffer{};
-        const sockaddr* m_dest_addr{nullptr};
-        const socklen_t m_dest_len{0};
-        int m_flags{0};
-        IoCtx m_ctx{};
+        friend class IoOperation<AsyncWriteSocketTo>;
+        static constexpr bool kCancellable = true;
+
+        SocketT m_fd;
+        std::span<const std::byte> m_buffer;
+        int m_flags;
+        sockaddr_storage m_addr{};
+        socklen_t m_addrlen;
+        iovec m_iov{};
+        msghdr m_msg{};
+
+        void prepare(io_uring_sqe* sqe) noexcept
+        {
+            m_iov.iov_base = const_cast<std::byte*>(m_buffer.data());
+            m_iov.iov_len = m_buffer.size();
+            m_msg.msg_name = &m_addr;
+            m_msg.msg_namelen = m_addrlen;
+            m_msg.msg_iov = &m_iov;
+            m_msg.msg_iovlen = 1;
+            io_uring_prep_sendmsg(sqe, m_fd, &m_msg, static_cast<unsigned>(m_flags));
+        }
+        [[nodiscard]] bool nothing_to_do() const noexcept { return m_buffer.empty(); }
 
     public:
-        explicit AsyncWriteSocketTo(
-            IoQueue* queue,
-            const SocketT fd,
-            const std::span<std::byte> buffer,
-            const sockaddr* dest_addr,
-            const socklen_t dest_len,
-            const int flags = 0
-        ) noexcept
-            : m_queue(queue),
-              m_fd(fd),
-              m_buffer(buffer),
-              m_dest_addr(dest_addr),
-              m_dest_len(dest_len),
-              m_flags(flags) {}
-
-        AsyncWriteSocketTo(const AsyncWriteSocketTo&) = delete;
-        AsyncWriteSocketTo& operator=(const AsyncWriteSocketTo&) = delete;
-        AsyncWriteSocketTo(AsyncWriteSocketTo&&) = delete;
-        AsyncWriteSocketTo& operator=(AsyncWriteSocketTo&&) = delete;
-
-        [[nodiscard]]
-        bool await_ready() const noexcept {
-            return m_buffer.empty();
+        AsyncWriteSocketTo(IoQueue& queue, const SocketT fd, const std::span<const std::byte> buffer,
+                           const sockaddr* destination, const socklen_t length, const int flags = MSG_NOSIGNAL) noexcept
+            : IoOperation(queue), m_fd(fd), m_buffer(buffer), m_flags(flags),
+              m_addrlen(length > sizeof(sockaddr_storage) ? static_cast<socklen_t>(sizeof(sockaddr_storage)) : length)
+        {
+            std::memcpy(&m_addr, destination, m_addrlen);
         }
 
-        template <typename PromiseT>
-            requires HasSafeHandleConcept<PromiseT>
-        void await_suspend(std::coroutine_handle<PromiseT> h) {
-            m_ctx.safe_coro = h.promise().GetSafeHandle();
-
-            m_ctx.prepare_udp_send(
-                m_buffer,
-                m_dest_addr,
-                m_dest_len
-            );
-
-            m_queue->submit_udp_socket_write(
-                m_fd,
-                &m_ctx,
-                m_flags
-            );
-        }
-
-        [[nodiscard]]
-        std::size_t await_resume() const {
-            if (m_buffer.empty()) {
-                return 0;
-            }
-
-            if (m_ctx.result < 0) {
-                throw std::system_error(
-                    -m_ctx.result,
-                    std::generic_category(),
-                    "Async UDP socket write failed"
-                );
-            }
-            return static_cast<std::size_t>(m_ctx.result);
+        [[nodiscard]] std::size_t await_resume()
+        {
+            return m_buffer.empty() ? 0 : static_cast<std::size_t>(finish("async datagram write"));
         }
     };
 }
