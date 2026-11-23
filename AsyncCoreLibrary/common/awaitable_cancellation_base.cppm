@@ -1,5 +1,6 @@
 module;
 
+#include <coroutine>
 #include <concepts>
 #include <optional>
 #include <stop_token>
@@ -29,7 +30,7 @@ class AwaitableCancellationBase {
      */
     template <typename PromiseT>
     [[nodiscard]] static std::stop_token stop_token_of(PromiseT& promise) {
-        if constexpr (requires { HasGetStopTokenConcept<PromiseT>; }) {
+        if constexpr (HasGetStopTokenConcept<PromiseT>) {
             return promise.GetStopToken();
         } else {
             return {};
@@ -52,5 +53,22 @@ class AwaitableCancellationBase {
      * @brief removes the cancellation callback, so after executing it wont free resource 2 times
      */
     void unwatch_stop() noexcept { m_registration.reset(); }
+};
+/**
+ * @brief Extracts the stop_token from a coroutine_handle<>
+ */
+struct CurrentStopToken {
+    std::stop_token token;
+
+    [[nodiscard]] bool await_ready() const noexcept { return false; }
+
+    template <typename PromiseT>
+        requires HasGetStopTokenConcept<PromiseT>
+    bool await_suspend(std::coroutine_handle<PromiseT> caller) noexcept {
+        token = caller.promise().GetStopToken();
+        return false;
+    }
+
+    [[nodiscard]] std::stop_token await_resume() noexcept { return std::move(token); }
 };
 } // namespace async_core::common

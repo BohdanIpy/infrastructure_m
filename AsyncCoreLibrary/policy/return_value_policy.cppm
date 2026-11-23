@@ -1,66 +1,51 @@
 module;
 
+#include <concepts>
+#include <memory>
 #include <optional>
-#include <semaphore>
+#include <type_traits>
+#include <utility>
 #include <variant>
 
 export module AsyncCoreLibrary:ReturnValuePolicy;
 
-import :TaskTypes;
+export namespace async_core::policy {
+// ==========================================
+// Return Value Handling
+// ==========================================
+// The result is read through BasicPromiseType::take_result(); these bases only store it.
 
-using async_core::common::TaskType;
+template <typename T> struct PromiseReturnBase {
+    static_assert(!std::is_rvalue_reference_v<T>,
+                  "a task cannot return an rvalue reference (it would dangle)");
 
-export namespace async_core::policy
-{
-    // ==========================================
-    // Return Value Handling
-    // ==========================================
+    using value_type = T;
+    using stored_type = std::optional<T>;
 
-    template <typename T>
-    struct PromiseReturnBase {
-        using value_type  = T;
-        using stored_type = std::optional<T>;
-        using result_type = T;
+    stored_type m_value;
 
-        stored_type value;
+    template <typename U>
+        requires std::convertible_to<U, T>
+    void return_value(U&& val) {
+        m_value.emplace(std::forward<U>(val));
+    }
+};
 
-        template <typename U>
-            requires std::convertible_to<U, T>
-        void return_value(U&& val) {
-            value.emplace(std::forward<U>(val));
-        }
+template <typename T> struct PromiseReturnBase<T&> {
+    using value_type = T&;
+    using stored_type = T*;
 
-        result_type result() {
-            return std::move(value.value());
-        }
-    };
+    stored_type m_value{nullptr};
 
-    template <typename T>
-    struct PromiseReturnBase<T&> {
-        using value_type  = T&;
-        using stored_type = T*;
-        using result_type = T&;
+    void return_value(T& val) noexcept { m_value = std::addressof(val); }
+};
 
-        stored_type value{nullptr};
+template <> struct PromiseReturnBase<void> {
+    using value_type = void;
+    using stored_type = std::monostate;
 
-        void return_value(T& val) noexcept {
-            value = std::addressof(val);
-        }
+    stored_type m_value{};
 
-        result_type result() const {
-            return *value;
-        }
-    };
-
-    template <>
-    struct PromiseReturnBase<void> {
-        using value_type  = void;
-        using stored_type = std::monostate;
-        using result_type = void;
-
-        stored_type value{};
-
-        void return_void() noexcept {}
-        result_type result() const noexcept {}
-    };
-}
+    void return_void() noexcept {}
+};
+} // namespace async_core::policy

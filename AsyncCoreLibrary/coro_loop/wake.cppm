@@ -18,4 +18,12 @@ void wake(ICoroScheduler& scheduler, const WaitState& state) noexcept {
         (void)state.Handle().TryResume();
     }
 }
+
+void resume_waiter(ICoroScheduler* scheduler, const WaitState& state) noexcept {
+    if (scheduler != nullptr) {
+        wake(*scheduler, state);
+    } else {
+        (void)state.Handle().TryResume();
+    }
+}
 } // namespace async_core::coro_loop

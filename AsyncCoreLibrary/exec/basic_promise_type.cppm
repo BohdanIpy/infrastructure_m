@@ -1,7 +1,10 @@
 module;
 
 #include <coroutine>
+#include <exception>
+#include <type_traits>
 #include <typeinfo>
+#include <utility>
 
 export module AsyncCoreLibrary:BasicPromiseType;
 
@@ -13,14 +16,20 @@ import :ExceptionHandlingPolicy;
 import :ContinuationPolicy;
 import :CancellingRoutines;
 import :CoroutineStates;
+import :Exceptions;
 
 namespace async_core::exec {
 using common::CancellationNode;
 using common::CoroutineState;
+using common::OperationCancelledException;
 using common::SafeCoroutineHandle;
+using common::TaskFinishedWithoutProducingValueException;
+using common::TaskReturnedNullReferenceException;
 using common::TaskType;
 using policy::ContinuationPolicy;
 using policy::ExceptionPolicy;
+using policy::IsEndPolicyConcept;
+using policy::IsStartPolicyConcept;
 using policy::LazyStartPolicy;
 using policy::ManualEndPolicy;
 using policy::PromiseReturnBase;
@@ -44,23 +53,69 @@ struct BasicPromiseType final
     , ContinuationPolicy<Kind>
     , CancellationNode {
 
-    SafeCoroutineHandle safe_handle;
+    static_assert(IsStartPolicyConcept<StartPolicy>,
+                  "StartPolicy must provide initial_suspend() and starts_immediately");
+    static_assert(IsEndPolicyConcept<EndPolicy>, "EndPolicy must provide final_suspend<Promise>()");
+    static_assert(Kind != TaskType::Wired || !StartPolicy::starts_immediately,
+                  "a wired Task must be lazy: an already running coroutine cannot be awaited later "
+                  "(it would be resumed a second time). Use DetachedTask for eager start.");
+
+    SafeCoroutineHandle m_safeHandle;
 
     BasicPromiseType() = default;
 
-    ~BasicPromiseType() override { safe_handle.SetState(CoroutineState::Destroyed); }
+    ~BasicPromiseType() override { m_safeHandle.SetState(CoroutineState::Destroyed); }
 
+    /**
+     * @brief Get the return Task object
+     *
+     * @return ObjectType instance of Task<>/DetachedTask<>
+     */
     ObjectType get_return_object() {
-        safe_handle =
+        m_safeHandle =
             SafeCoroutineHandle{std::coroutine_handle<BasicPromiseType>::from_promise(*this),
                                 typeid(BasicPromiseType), m_source};
-        return ObjectType{safe_handle};
+        return ObjectType{m_safeHandle};
     }
 
-    auto initial_suspend() noexcept { return StartPolicy::initial_suspend(); }
+    auto initial_suspend() noexcept {
+        if constexpr (StartPolicy::starts_immediately) {
+            (void)m_safeHandle.TryClaimStart();
+        }
+        return StartPolicy::initial_suspend();
+    }
 
     auto final_suspend() noexcept { return EndPolicy::template final_suspend<BasicPromiseType>(); }
 
-    [[nodiscard]] SafeCoroutineHandle GetSafeHandle() const noexcept { return safe_handle; }
+    [[nodiscard]] SafeCoroutineHandle GetSafeHandle() const noexcept { return m_safeHandle; }
+
+    /**
+     * @brief Result of a FINISHED wired task, in one place for co_await and Get():
+     * rethrows the stored exception, throws OperationCancelledException if cancelled, otherwise
+     * gives the value. (Only instantiated for wired tasks; it relies on m_exception, IsCancelled()
+     * and value of the policies.)
+     */
+    ReturnType take_result() {
+        if (this->m_exception) {
+            std::rethrow_exception(this->m_exception);
+        }
+        if (this->IsCancelled()) {
+            throw OperationCancelledException{};
+        }
+
+        if constexpr (std::is_void_v<ReturnType>) {
+            return;
+        } else if constexpr (std::is_reference_v<ReturnType>) {
+            if (!this->m_value) {
+                throw TaskReturnedNullReferenceException{};
+            }
+            return *this->m_value;
+        } else {
+            if (!this->m_value.has_value()) {
+                throw TaskFinishedWithoutProducingValueException{};
+            }
+            return std::move(*this->m_value);
+        }
+    }
 };
 } // namespace async_core::exec

@@ -17,6 +17,10 @@ using common::SafeCoroutineHandle;
 } // namespace async_core::exec
 
 export namespace async_core::exec {
+/**
+ * @brief Base class for Task<>/DetachedTask<>
+ * @tparam TaskTypeT parameter for wired and detached Task<>
+ */
 template <typename TaskTypeT> class TaskBase {
   public:
     using task_type = TaskTypeT;

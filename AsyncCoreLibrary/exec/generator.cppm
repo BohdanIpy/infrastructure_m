@@ -36,7 +36,7 @@ template <typename T> class Generator {
         auto yield_value(T&& val) noexcept {
             value = &val;
             return std::suspend_always{};
-        } 
+        }
 
         void return_void() noexcept {}
 

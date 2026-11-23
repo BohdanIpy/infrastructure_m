@@ -71,5 +71,4 @@ struct AsyncPollCancelledOrFailedException : BaseSystemException {
 struct AsyncFdReadFailedException : BaseSystemException {
     using BaseSystemException::BaseSystemException;
 };
-
 } // namespace async_core::common

@@ -70,5 +70,4 @@ class WaitState {
         return std::make_shared<WaitState>(std::move(handle));
     }
 };
-
 } // namespace async_core::common

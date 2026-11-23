@@ -15,6 +15,7 @@ import :StartEndPolicy;
 import :BasicPromiseType;
 import :TaskBase;
 import :TaskCancellable;
+import :TaskAwaitable;
 import :Exceptions;
 import :TaskTypes;
 import :Concepts;
@@ -22,18 +23,16 @@ import :Concepts;
 namespace async_core::exec {
 using common::HasGetStopTokenConcept;
 using common::InvalidCoroutineHandleException;
-using common::OperationCancelledException;
 using common::SafeCoroutineHandle;
-using common::TaskFinishedWithoutProducingValueException;
 using common::TaskResumeFailedException;
-using common::TaskReturnedNullReferenceException;
 using common::WiredTaskES;
 using exec::TaskCancellable;
-using policy::EagerStartPolicy;
 using policy::LazyStartPolicy;
 } // namespace async_core::exec
 
 export namespace async_core::exec {
+/// A wired Task is always lazy (BasicPromiseType static_asserts it): it starts when it is awaited,
+/// or by Get()/TryStart().
 template <typename T, typename Policy = LazyStartPolicy>
 class Task
     : public TaskBase<WiredTaskES>
@@ -51,14 +50,7 @@ class Task
     using promise_type =
         BasicPromiseType<Task, value_type, TaskType::Wired, Policy, ManualEndPolicy>;
 
-    /**
-     * base task type
-     */
     using Base = TaskBase;
-
-    /**
-     * alias for exposing the task_type(wired/detached)
-     */
     using Base::task_type;
 
     explicit Task(SafeCoroutineHandle handle)
@@ -77,6 +69,24 @@ class Task
         return *this;
     }
 
+    /**
+     * Awaits the task from another coroutine:  auto v = co_await std::move(task);
+     * The Task keeps owning the frame; the awaiter only runs it. Rvalue-only on purpose.
+     */
+    [[nodiscard]] TaskAwaitable<T, promise_type> operator co_await() && noexcept {
+        if (!this->m_safeHandle.IsValid()) {
+            return TaskAwaitable<T, promise_type>{std::coroutine_handle<promise_type>{}};
+        }
+        return TaskAwaitable<T, promise_type>{
+            this->m_safeHandle.template RawHandle<promise_type>()};
+    }
+
+    /**
+     * @brief Runs the task and BLOCKS the calling thread until it finishes (rethrows its exception,
+     * throws OperationCancelledException if it was cancelled). For the main thread and tests only:
+     * calling it on a scheduler worker can deadlock if the task needs that worker. The value is
+     * moved out, so call it once.
+     */
     value_type Get() {
         if (!this->m_safeHandle.IsValid()) {
             throw InvalidCoroutineHandleException{};
@@ -96,38 +106,14 @@ class Task
             sem.acquire();
         }
 
-        if (h.promise().m_exception) {
-            std::rethrow_exception(h.promise().m_exception);
-        }
-
-        if (h.promise().IsCancelled()) {
-            throw OperationCancelledException{};
-        }
-
-        if constexpr (std::is_void_v<T>) {
-            return;
-        } else if constexpr (std::is_reference_v<T>) {
-            if (!h.promise().value) {
-                throw TaskReturnedNullReferenceException{};
-            }
-            return *h.promise().value;
-        } else {
-            if (!h.promise().value.has_value()) {
-                throw TaskFinishedWithoutProducingValueException{};
-            }
-            return std::move(*h.promise().value);
-        }
+        return h.promise().take_result();
     }
 
     [[nodiscard]] bool IsReady() const noexcept {
-        if (this->m_safeHandle.IsValid()) {
-            this->m_safeHandle.template RawHandle<promise_type>().done();
-        }
-        return false;
+        return this->m_safeHandle.IsValid() &&
+               this->m_safeHandle.template RawHandle<promise_type>().done();
     }
 };
 
 template <typename T> using LazyTask = Task<T>;
-
-template <typename T> using EagerTask = Task<T, EagerStartPolicy>;
 } // namespace async_core::exec

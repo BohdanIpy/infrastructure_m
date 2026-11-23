@@ -1,52 +1,55 @@
 module;
 
+#include <format>
 #include <exception>
-#include <iostream>
 
 export module AsyncCoreLibrary:ExceptionHandlingPolicy;
 
 import :TaskTypes;
+import :Exceptions;
+import CoreUtility;
 
-using async_core::common::TaskType;
+namespace async_core::policy {
+using common::OperationCancelledException;
+using common::TaskType;
+using core_utility::stderr_logger::GetLogger;
+using core_utility::stderr_logger::StderrLogger;
+} // namespace async_core::policy
 
-export namespace async_core::policy
-{
-    // ==========================================
-    // Exception Handling Policies
-    // ==========================================
+export namespace async_core::policy {
+// ==========================================
+// Exception Handling Policies
+// ==========================================
 
-    template <TaskType Type, typename Stream = std::ostream&>
-    struct ExceptionPolicy;
+template <TaskType Type> struct ExceptionPolicy;
 
-    // Wired Task: Stores exception_ptr to be rethrown later by the parent/awaiter
-    template <typename Stream>
-    struct ExceptionPolicy<TaskType::Wired, Stream>
-    {
-        std::exception_ptr m_exception{nullptr};
+/** @brief Wired Task: stores the exception to be rethrown by the awaiter / Get() (see
+ * BasicPromiseType::take_result)
+ */
+template <> struct ExceptionPolicy<TaskType::Wired> {
+    std::exception_ptr m_exception{nullptr};
 
-        void unhandled_exception() noexcept {
-            m_exception = std::current_exception();
+    void unhandled_exception() noexcept { m_exception = std::current_exception(); }
+
+    void rethrow_if_exception() const {
+        if (m_exception) {
+            std::rethrow_exception(m_exception);
         }
+    }
+};
 
-        void rethrow_if_exception() const {
-            if (m_exception) {
-                std::rethrow_exception(m_exception);
-            }
+// Detached Task: nobody awaits it, so the exception goes to the installed handler
+template <> struct ExceptionPolicy<TaskType::Detached> {
+    void unhandled_exception() noexcept {
+        try {
+            throw;
+        } catch (const OperationCancelledException&) {
+        } catch (const std::exception& e) {
+            GetLogger().LogException("DetachedExceptionHandler", std::current_exception());
+        } catch (...) {
+            GetLogger().LogCritical("DetachedExceptionHandler",
+                                    "[DetachedTask] unhandled exception: unknown type]");
         }
-    };
-
-    // Detached Task: Catches and logs the exception immediately using a provided stream
-    template <typename Stream>
-    struct ExceptionPolicy<TaskType::Detached, Stream>
-    {
-        void unhandled_exception() noexcept {
-            try {
-                std::rethrow_exception(std::current_exception());
-            } catch (const std::exception& e) {
-                std::cerr << "[DetachedTask Exception]: " << e.what() << '\n';
-            } catch (...) {
-                std::cerr << "[DetachedTask Exception]: Unknown exception\n";
-            }
-        }
-    };
-}
+    }
+};
+} // namespace async_core::policy
