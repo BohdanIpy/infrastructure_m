@@ -7,6 +7,11 @@ module;
 export module AsyncCoreLibrary:CancellingRoutines;
 
 import :Exceptions;
+import :Concepts;
+
+namespace async_core::common {
+using common::AwaitableDefinedCoAwaitOperatorConcept;
+}
 
 export namespace async_core::common {
 /**
@@ -99,7 +104,7 @@ namespace detail {
  * @return decltype(auto) return-type
  */
 template <typename Awaitable> decltype(auto) get_awaiter(Awaitable&& awaitable) {
-    if constexpr (requires { std::forward<Awaitable>(awaitable).operator co_await(); }) {
+    if constexpr (AwaitableDefinedCoAwaitOperatorConcept<Awaitable>) {
         return std::forward<Awaitable>(awaitable).operator co_await();
     } else {
         return std::forward<Awaitable>(awaitable);

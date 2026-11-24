@@ -26,6 +26,17 @@ concept HasSafeHandleConcept = requires {
     { std::declval<Promise&>().GetSafeHandle() } -> std::same_as<SafeCoroutineHandle>;
 };
 
+template <typename Aw>
+concept AwaiterConcept = requires(Aw&& aw) {
+    { aw.await_ready() } -> std::convertible_to<bool>;
+    aw.await_resume();
+};
+
+template <typename Awaitable>
+concept AwaitableDefinedCoAwaitOperatorConcept = requires(Awaitable&& aw) {
+    { std::forward<Awaitable>(aw).operator co_await() } -> AwaiterConcept;
+};
+
 struct WiredTaskES;
 template <typename StructT>
 concept IsWiredTaskEsConcept = std::same_as<StructT, WiredTaskES>;

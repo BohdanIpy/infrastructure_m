@@ -23,16 +23,17 @@ namespace async_core::sync {
 using common::AwaitableCancellationBase;
 using common::HasSafeHandleConcept;
 using common::OperationCancelledException;
+using common::WaitRef;
 using common::WaitState;
 using coro_loop::CancelWait;
 using coro_loop::ICoroScheduler;
 using coro_loop::wake;
-using WaiterQueue = std::queue<std::shared_ptr<WaitState>, std::list<std::shared_ptr<WaitState>>>;
+using WaiterQueue = std::queue<WaitRef, std::list<WaitRef>>;
 } // namespace async_core::sync
 
 export namespace async_core::sync {
 /**
- * Mutex for coroutines. Waiting does not block a thread.
+ * @brief Mutex for coroutines. Waiting does not block a thread.
  *
  *   auto guard = co_await mutex;       // or mutex.lock_async()
  *
@@ -54,10 +55,9 @@ export namespace async_core::sync {
 class AsyncMutex {
     ICoroScheduler& m_scheduler;
     std::mutex m_mtx;
-    bool m_locked{false};  // guarded by m_mtx
-    WaiterQueue m_waiters; // guarded by m_mtx
+    bool m_locked{false}; 
+    WaiterQueue m_waiters; 
 
-    /// Caller holds m_mtx.
     void purge_dead_front() noexcept {
         while (!m_waiters.empty() && m_waiters.front()->IsFinished()) {
             m_waiters.pop();
@@ -71,7 +71,7 @@ class AsyncMutex {
       public:
         ScopedLock() noexcept = default;
         explicit ScopedLock(AsyncMutex* mutex) noexcept
-            : m_mutex(mutex) {} // adopts a lock that is already held
+            : m_mutex(mutex) {}
 
         ScopedLock(const ScopedLock&) = delete;
         ScopedLock& operator=(const ScopedLock&) = delete;
@@ -81,24 +81,21 @@ class AsyncMutex {
 
         ScopedLock& operator=(ScopedLock&& other) noexcept {
             if (this != &other) {
-                unlock();
+                Unlock();
                 m_mutex = std::exchange(other.m_mutex, nullptr);
             }
             return *this;
         }
 
-        ~ScopedLock() { unlock(); }
+        ~ScopedLock() { Unlock(); }
 
-        /// Unlocks early. Safe to call twice.
-        void unlock() noexcept {
+        void Unlock() noexcept {
             if (AsyncMutex* mutex = std::exchange(m_mutex, nullptr)) {
-                mutex->unlock();
+                mutex->Unlock();
             }
         }
 
-        /// Gives up the guard WITHOUT unlocking; the caller becomes responsible for
-        /// AsyncMutex::unlock().
-        AsyncMutex* release() noexcept { return std::exchange(m_mutex, nullptr); }
+        AsyncMutex* Release() noexcept { return std::exchange(m_mutex, nullptr); }
 
         [[nodiscard]] bool owns_lock() const noexcept { return m_mutex != nullptr; }
     };
@@ -107,24 +104,22 @@ class AsyncMutex {
         friend class AsyncMutex;
 
         AsyncMutex& m_mutex;
-        std::shared_ptr<WaitState> m_wait; // null if the lock was taken in await_ready()
+        WaitRef m_wait; 
 
         explicit LockAwaiter(AsyncMutex& mutex) noexcept
             : m_mutex(mutex) {}
 
       public:
-        [[nodiscard]] bool await_ready() noexcept { return m_mutex.try_lock(); }
+        [[nodiscard]] bool await_ready() noexcept { return m_mutex.TryLock(); }
 
         template <typename PromiseT>
             requires HasSafeHandleConcept<PromiseT>
         bool await_suspend(std::coroutine_handle<PromiseT> caller) {
             auto& promise = caller.promise();
 
-            auto state = std::make_shared<WaitState>(promise.GetSafeHandle());
+            auto state = WaitState::Make(promise.GetSafeHandle());
             m_wait = state;
 
-            // Only completes the state, so it is safe before the lock (even if stop was already
-            // requested).
             this->watch_stop(this->stop_token_of(promise), CancelWait{state, &m_mutex.m_scheduler});
 
             {
@@ -132,25 +127,25 @@ class AsyncMutex {
                 m_mutex.purge_dead_front();
 
                 if (!m_mutex.m_locked && m_mutex.m_waiters.empty()) {
-                    bool unused = false;
-                    if (state->complete(WaitState::Completed, unused)) {
-                        m_mutex.m_locked = true; // we own it; continue inline
-                    } // else cancelled meanwhile: lock stays free, await_resume throws
+                    bool _ = false;
+                    if (state->Complete(WaitState::Completed, _)) {
+                        m_mutex.m_locked = true;
+                    } 
                     return false;
                 }
-                if (state->is_finished()) {
-                    return false; // cancelled before queueing
+                if (state->IsFinished()) {
+                    return false;
                 }
                 m_mutex.m_waiters.push(state);
             }
 
-            return state->arm(); // after this only `state` may be used
+            return state->Arm(); 
         }
 
         [[nodiscard]] ScopedLock await_resume() {
             this->unwatch_stop();
             if (m_wait && m_wait->GetPhase() != WaitState::Completed) {
-                throw OperationCancelledException{}; // cancelled: the lock was never handed to us
+                throw OperationCancelledException{};
             }
             return ScopedLock{&m_mutex};
         }
@@ -179,9 +174,7 @@ class AsyncMutex {
         }
     }
 
-    /// Takes the lock if it is free and nobody is queued. After true the caller must call unlock()
-    /// (or adopt it with ScopedLock{&m}).
-    [[nodiscard]] bool try_lock() noexcept {
+    [[nodiscard]] bool TryLock() noexcept {
         std::lock_guard lock(m_mtx);
         purge_dead_front();
         if (m_locked || !m_waiters.empty()) {
@@ -195,7 +188,7 @@ class AsyncMutex {
     [[nodiscard]] LockAwaiter operator co_await() noexcept { return LockAwaiter{*this}; }
 
     /// Hands the lock to the first live waiter, or frees it.
-    void unlock() noexcept {
+    void Unlock() noexcept {
         ICoroScheduler& scheduler =
             m_scheduler; // the new owner may destroy the mutex as soon as it runs
         std::shared_ptr<WaitState> chosen;
@@ -208,8 +201,7 @@ class AsyncMutex {
                 auto candidate = std::move(m_waiters.front());
                 m_waiters.pop();
                 bool needed = false;
-                if (candidate->Complete(WaitState::Completed,
-                                        needed)) { // cancelled waiters fail here and are skipped
+                if (candidate->Complete(WaitState::Completed, needed)) {
                     chosen = std::move(candidate);
                     resume_needed = needed;
                     break;
@@ -217,11 +209,10 @@ class AsyncMutex {
             }
             if (!chosen) {
                 m_locked = false;
-            } // else: the lock stays locked, it now belongs to `chosen`
+            }
         }
         if (chosen && resume_needed) {
-            wake(scheduler, *chosen); // else it has not finished suspending: its arm() fails and it
-                                      // continues inline
+            wake(scheduler, *chosen);
         }
     }
 };

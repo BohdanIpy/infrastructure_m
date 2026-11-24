@@ -1,7 +1,5 @@
 module;
 
-#include <memory>
-
 export module AsyncCoreLibrary:CancelWait;
 
 import :WaitState;
@@ -9,8 +7,9 @@ import :ICoroScheduler;
 import :Wake;
 
 namespace async_core::coro_loop {
-using async_core::common::WaitState;
-using async_core::coro_loop::wake;
+using common::WaitState;
+using coro_loop::wake;
+using common::WaitRef;
 } // namespace async_core::coro_loop
 
 export namespace async_core::coro_loop {
@@ -19,7 +18,7 @@ export namespace async_core::coro_loop {
  * would cancell only one co_await.
  */
 struct CancelWait {
-    std::shared_ptr<WaitState> state;
+    WaitRef state;
     ICoroScheduler* scheduler;
 
     void operator()() noexcept {

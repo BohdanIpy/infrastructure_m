@@ -72,6 +72,7 @@ target_sources(AsyncCoreLibrary
             sync/sync_wait.cppm
             sync/when_all.cppm
             sync/async_latch.cppm
+            sync/async_oneshot.cppm
 
             time/timer_queue.cppm
             time/sleep_awaiter.cppm

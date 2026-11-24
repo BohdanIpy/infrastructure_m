@@ -71,4 +71,9 @@ struct AsyncPollCancelledOrFailedException : BaseSystemException {
 struct AsyncFdReadFailedException : BaseSystemException {
     using BaseSystemException::BaseSystemException;
 };
+
+struct AsyncOneshotAlreadyTakenException : std::runtime_error {
+    AsyncOneshotAlreadyTakenException()
+        : std::runtime_error("AsyncOneshot is already taken by other awaitable") {}
+};
 } // namespace async_core::common
